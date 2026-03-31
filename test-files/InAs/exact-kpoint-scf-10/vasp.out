@@ -1,0 +1,54 @@
+ running    4 mpi-ranks, with    1 threads/rank, on    1 nodes
+ distrk:  each k-point on    4 cores,    1 groups
+ distr:  one band on    1 cores,    4 groups
+ OpenACC runtime initialized ...    4 GPUs detected
+ vasp.6.4.2 20Jul23 (build Jun  5 2025 09:16:51) complex                         
+ POSCAR found type information on POSCAR InAs
+ POSCAR found :  2 types and       2 ions
+ Reading from existing POTCAR
+ scaLAPACK will be used selectively (only on CPU)
+ Reading from existing POTCAR
+ LDA part: xc-table for Pade appr. of Perdew
+ POSCAR, INCAR and KPOINTS ok, starting setup
+ FFT: planning ... GRIDC
+ FFT: planning ... GRID_SOFT
+ FFT: planning ... GRID
+ WAVECAR not read
+ augmentation electrons    18.14117721380196     
+ soft         electrons    0.000000000000000     
+ total        electrons    18.14117721380196     
+ augmentation electrons   1.1147177907741610E-002
+ soft         electrons    0.000000000000000     
+ total        electrons   1.1147177907741610E-002
+ augmentation electrons    354.4124009509965     
+ soft         electrons    0.000000000000000     
+ total        electrons    354.4124009509965     
+ augmentation electrons    351.2678586509965     
+ soft         electrons    0.000000000000000     
+ total        electrons    351.2678586509965     
+ entering main loop
+       N       E                     dE             d eps       ncg     rms          rms(c)
+DAV:   1     0.106687496785E+03    0.10669E+03   -0.84308E+03  3024   0.121E+03
+DAV:   2    -0.800867585984E+00   -0.10749E+03   -0.10279E+03  3224   0.294E+02
+DAV:   3    -0.783881727652E+01   -0.70379E+01   -0.70033E+01  3928   0.727E+01
+DAV:   4    -0.799582793068E+01   -0.15701E+00   -0.15697E+00  3624   0.123E+01
+DAV:   5    -0.800264882497E+01   -0.68209E-02   -0.68208E-02  4664   0.231E+00    0.417E+00
+DAV:   6    -0.786638200431E+01    0.13627E+00   -0.39023E-01  4648   0.983E+00    0.167E+00
+DAV:   7    -0.785058339155E+01    0.15799E-01   -0.10277E-01  3520   0.262E+00    0.973E-01
+DAV:   8    -0.785128084432E+01   -0.69745E-03   -0.16805E-02  3376   0.891E-01    0.348E-01
+DAV:   9    -0.785240734013E+01   -0.11265E-02   -0.29422E-03  3544   0.537E-01    0.148E-01
+DAV:  10    -0.785198183349E+01    0.42551E-03   -0.65503E-04  3576   0.221E-01    0.452E-02
+DAV:  11    -0.785196610181E+01    0.15732E-04   -0.97209E-05  3872   0.123E-01    0.220E-02
+DAV:  12    -0.785198364695E+01   -0.17545E-04   -0.33883E-05  3504   0.674E-02    0.967E-03
+DAV:  13    -0.785198913956E+01   -0.54926E-05   -0.20066E-05  3616   0.413E-02    0.443E-03
+DAV:  14    -0.785198717602E+01    0.19635E-05   -0.90167E-07  3328   0.114E-02    0.143E-03
+DAV:  15    -0.785198735367E+01   -0.17765E-06   -0.13020E-07  2304   0.285E-03
+   1 F= -.78519874E+01 E0= -.78519487E+01  d E =-.773284E-04  mag=    -0.0000
+ writing wavefunctions
+ augmentation electrons    6.329536405371737     
+ soft         electrons    11.78041711900173     
+ total        electrons    18.10995352437347     
+ augmentation electrons  -2.8572137892827043E-006
+ soft         electrons    11.78041711900173     
+ total        electrons  -3.3786170233339298E-007
+ PROFILE, used timers:     286

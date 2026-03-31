@@ -1,0 +1,32 @@
+material_name InAs
+Crystal_System cubic
+Space_Group F-43m
+X 10
+XX 1000
+E_Fermi 4.3078
+nbands 16
+nkpoints 1000
+kgrid (10, 10, 10)
+scissor_shift 0.4
+band_gap 0.0
+band_gap_after_shift 0.4
+firstCB_index 9
+lastVB_index 8
+CBM 0.4
+VBM 0.0
+volume 56.5471
+dielectric_constant 0.0
+b1 [1.6839947530006703, -0.5953823345220409, 0.0]
+b2 [0.0, 1.786146515275799, 0.0]
+b3 [-0.8419973765003351, -0.5953820903768791, 1.4583825178845475]
+NELECT 18.0
+q_TF 2.2544209947355656
+omega_p 3.1828972317188156e+16
+nd 0
+Ef_eq 0.2100741735897797
+ni 2.278974804220306e+16
+n 1.227897480422033e+17
+p 1.2278974804220325e+17
+delta_n 1e+17
+Efn 0.25368410388743773
+Efp 0.16650612983782342
