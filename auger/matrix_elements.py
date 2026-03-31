@@ -23,7 +23,7 @@ from multiprocessing import cpu_count, get_context
 from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
-from pyvaspwfc import vaspwfc as vwfc
+import vaspwfc as vwfc
 
 from . import utilities as ut
 from .constants import (
