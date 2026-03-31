@@ -13,7 +13,7 @@ A Python package for calculating direct Auger recombination coefficients
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/Hamza-Alhasan-22/pyAuger
 cd pyAuger
 
 # Install in editable mode
