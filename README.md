@@ -20,6 +20,12 @@ cd pyAuger
 pip install -e .
 ```
 
+Or download easily and directly using pip:
+
+```bash
+pip install git+https://github.com/Hamza-Alhasan-22/pyAuger
+```
+
 **Dependencies:** `numpy`, `scipy`, `pandas`, `matplotlib`, `pymatgen`, `pyvaspwfc`
 
 The code was created and tested with the following versions:
