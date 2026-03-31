@@ -23,6 +23,7 @@ pip install -e .
 **Dependencies:** `numpy`, `scipy`, `pandas`, `matplotlib`, `pymatgen`, `pyvaspwfc`
 
 The code was created and tested with the following versions:
+- python 3.12.12
 - numpy 2.4.2
 - scipy 1.16.3
 - pandas 2.2.3
