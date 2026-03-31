@@ -1,11 +1,15 @@
-# pyAuger — Ab-Initio Direct Auger Recombination Calculator
+# pyAuger — ab-initio Direct Auger Recombination Calculator
 
 ![Tests](https://img.shields.io/badge/tests-164%20passed-brightgreen?style=flat-square&logo=pytest&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.x-blue?style=flat-square&logo=python&logoColor=white)
-![License](https://img.shields.io/badge/license-TBD-lightgrey?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 A Python package for calculating direct Auger recombination coefficients
 (**C_n** and **C_p**) for semiconductors using first-principles VASP data.
+
+<p align="center">
+  <img src="icon.png" alt="pyAuger icon" width="200"/>
+</p>
 
 ---
 
@@ -63,11 +67,16 @@ auger/
 | **eeh** | electron–electron–hole | Two CB electrons scatter; one recombines with a VB hole | C_n |
 | **ehh** | electron–hole–hole | A CB electron recombines with two VB holes scattering | C_p |
 
-The total Auger coefficient is: **C_Auger = C_n + C_p**.
+The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Auger recombinations and the carrier indices used in the code is shown in this figure:
+
+<p align="center">
+  <img src="eeh_ehh_auger.png" alt="EEH and EHH Auger recombination processes" width="600"/>
+</p>
+
 
 ### Auger coefficient equation
 
-The Auger coefficient is evaluated via Fermi's Golden Rule:
+Most of the background theory can be found [here](https://doi.org/10.1103/PhysRevB.92.035207). The Auger coefficient is evaluated via Fermi's Golden Rule:
 
 $$C_n = \frac{4\pi}{\hbar} \frac{1}{n^2 p - n_i^2 n} \sum_{\text{pairs}} P \cdot |M|^2 \cdot \delta(\Delta E)$$
 
@@ -146,7 +155,7 @@ results = calc.calculate_auger_rates(auger_type="eeh")
 For materials where pymatgen detects a zero or incorrect band gap (e.g. semimetals or narrow-gap systems), the automatic identification of the conduction band minimum (CBM) and valence band maximum (VBM) may fail. In such cases, manually specify the band indices **before** parsing:
 
 ```python
-calc = AugerCalculator(T=300, nd=1e17)
+calc = AugerCalculator(T=300, nd=0)
 
 # 0-based indices: firstCB is the first conduction band,
 # lastVB is the last valence band.
@@ -338,4 +347,4 @@ Outputs a CSV with one row per (delta function, FWHM) combination.
 
 ## License
 
-<!-- TODO -->
+This project is licensed under the [MIT License](LICENSE).
