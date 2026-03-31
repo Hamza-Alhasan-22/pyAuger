@@ -317,8 +317,8 @@ Outputs a CSV with one row per (delta function, FWHM) combination.
 | Energies (eigenvalues, band gap, Fermi levels, energy windows) | eV |
 | k-points (Cartesian coordinates in saved `.npy` files) | Å⁻¹ |
 | Carrier concentrations (n, p, n_i, delta_n, doping) | cm⁻³ |
-| Matrix elements |M| | eV |
-| Matrix elements |M|² | eV² |
+| Matrix elements M | eV |
+| Matrix elements M² | eV² |
 | Auger coefficients (C_n, C_p) | cm⁶/s |
 
 ---
