@@ -371,6 +371,9 @@ class MatrixElements:
                         avg = np.mean([r.get("|M|^2", 0) for r in results[-100:]])
                         print(f"    [{done:6d}/{total}] {pct:5.1f}%  avg |M|²={avg:.4e} eV²",
                               end="\r")
+                    # Check: if the result has an error, stop and raise an error:
+                    if result.get("error") is not None:
+                        raise RuntimeError(f"Error in pair {result['pair_id']}: {result['error']}")
 
         print(f"\n  Saved → {output_file}")
         return results + calculated
