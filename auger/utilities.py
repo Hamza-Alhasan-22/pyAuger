@@ -84,35 +84,17 @@ def get_firstCB_and_lastVB(
             "Assign them manually via AugerCalculator.assign_firstCB_and_lastVB()."
         )
 
-    if first_CB_index - last_VB_index == 1:
-        return first_CB_index, last_VB_index
-
-    # --- Gapless / near-gapless fallback: slope-change heuristic ---
-    bands_indices = range(last_VB_index, first_CB_index + 2)
-    slopes = []
-    for i in bands_indices:
-        slope = np.polyfit(range(num_of_kpoints), data_energies[i, :], 1)[0]
-        slopes.append(slope)
-
-    sign_changes = [
-        i for i in range(len(slopes) - 1) if slopes[i] * slopes[i + 1] < 0
-    ]
-    if len(sign_changes) != 1:
+    # Raise an error if first_CB_index - last_VB_index != 1:
+    if first_CB_index - last_VB_index != 1:
         raise ValueError(
-            "Could not find CB/VB indices (band gap ≈ 0).  "
-            "Assign them manually with AugerCalculator.assign_firstCB_and_lastVB()."
+            f"Identified first_CB_index={first_CB_index} and "
+            f"last_VB_index={last_VB_index}, but expected them to be "
+            f"consecutive.  Please assign them manually via "
+            f"AugerCalculator.assign_firstCB_and_lastVB()."
         )
-
-    first_CB_band = bands_indices[sign_changes[0]]
-    last_VB_band = bands_indices[sign_changes[0] + 1]
-    first_CB_avg = np.mean(data_energies[first_CB_band, :])
-    last_VB_avg = np.mean(data_energies[last_VB_band, :])
-
-    if first_CB_avg > last_VB_avg:
-        return first_CB_band, last_VB_band
-    return last_VB_band, first_CB_band
-
-
+    return first_CB_index, last_VB_index
+    
+    
 # ═══════════════════════════════════════════════════════════════════════════
 # File I/O
 # ═══════════════════════════════════════════════════════════════════════════
@@ -397,6 +379,42 @@ def convert_seconds(seconds: float) -> Tuple[int, int, int, int]:
 # ═══════════════════════════════════════════════════════════════════════════
 # NSCF helpers
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def calculate_kpoints(poscar_path, kspacing):
+    """
+    Calculate the number of k-points in each reciprocal lattice direction based on a given KSPACING.
+    
+    Parameters:
+        poscar_path (str): Path to the POSCAR file.
+        kspacing (float): Value of KSPACING in Å^-1.
+    
+    Returns:
+        tuple: A tuple containing the number of k-points (Ni1, Ni2, Ni3).
+    """
+    # Read the POSCAR file
+    with open(poscar_path, 'r') as file:
+        lines = file.readlines()
+    
+    # Extract lattice vectors
+    a1 = np.array([float(x) for x in lines[2].split()])
+    a2 = np.array([float(x) for x in lines[3].split()])
+    a3 = np.array([float(x) for x in lines[4].split()])
+    
+    # Calculate the volume of the unit cell
+    volume = np.dot(a1, np.cross(a2, a3))
+    
+    # Calculate reciprocal lattice vectors
+    b1 = 2 * np.pi * np.cross(a2, a3) / volume
+    b2 = 2 * np.pi * np.cross(a3, a1) / volume
+    b3 = 2 * np.pi * np.cross(a1, a2) / volume
+    
+    # Calculate Ni for each direction
+    Ni1 = max(1, np.ceil(np.linalg.norm(b1) / kspacing))
+    Ni2 = max(1, np.ceil(np.linalg.norm(b2) / kspacing))
+    Ni3 = max(1, np.ceil(np.linalg.norm(b3) / kspacing))
+    
+    return (Ni1, Ni2, Ni3)
 
 def read_nscf_results(
     nscf_folders: Union[str, List[str]],

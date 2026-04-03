@@ -67,7 +67,7 @@ auger/
 | **eeh** | electron–electron–hole | Two CB electrons scatter; one recombines with a VB hole | C_n |
 | **ehh** | electron–hole–hole | A CB electron recombines with two VB holes scattering | C_p |
 
-The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Auger recombinations and the carrier indices used in the code is shown in this figure:
+The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Auger recombinations and the carrier indices used in the code are shown in this figure:
 
 <p align="center">
   <img src="eeh_ehh_auger.png" alt="EEH and EHH Auger recombination processes" width="600"/>
@@ -111,6 +111,9 @@ Energy conservation is enforced via broadened delta functions. Three are availab
 | `Lorentzian` | Longer tails |
 | `Rectangular` | Sharp cutoff |
 
+### k-grid convergence:
+Auger recombination coefficients are sensitive to the density of the k-point grid used in the DFT calculation. Converged results typically require dense k-grids (depending on the material). It is recommended to repeat the full Auger calculation at several k-grid sizes using the same settings and verify that the computed coefficients have converged before reporting final values.
+
 ---
 
 ## Quick start
@@ -118,33 +121,36 @@ Energy conservation is enforced via broadened delta functions. Three are availab
 ```python
 from auger import AugerCalculator
 
-# 1) Initialise
-calc = AugerCalculator(T=300, nd=0)         # 300 K, intrinsic case
+if __name__ == "__main__":
+    # 1) Initialise
+    calc = AugerCalculator(T=300, nd=0)         # 300 K, intrinsic case
 
-# 2) Import band-structure data (pre-parsed from VASP)
-calc.import_parsed_BS_data("./parsed_data")
+    # 2) Import band-structure data (pre-parsed from VASP)
+    calc.import_parsed_BS_data("./parsed_data")
 
-# 3) Carrier concentrations
-calc.calculate_carrier_concentrations(delta_n=1e17)
+    # 3) Carrier concentrations
+    calc.calculate_carrier_concentrations(delta_n=1e17)
 
-# 4) Generate Auger pairs (scattering channels)
-calc.create_auger_pairs(
-    CB_window=0.3, VB_window=0.3,
-    auger_type="eeh",
-    approach="nearest_kpoint",
-    search_mode="Max_Heap",
-)
+    # 4) Generate Auger pairs (scattering channels)
+    calc.create_auger_pairs(
+        CB_window=0.3, VB_window=0.3,
+        auger_type="eeh",
+        approach="nearest_kpoint",
+        search_mode="Max_Heap",
+    )
 
-# 5) Compute matrix elements
-calc.calculate_matrix_elements(
-    auger_type="eeh",
-    wavecar_files="WAVECAR",
-    dielectric_constant=16.8,
-)
+    # 5) Compute matrix elements
+    calc.calculate_matrix_elements(
+        auger_type="eeh",
+        wavecar_files="WAVECAR",
+        dielectric_constant=16.8,
+    )
 
-# 6) Evaluate Auger coefficient
-results = calc.calculate_auger_rates(auger_type="eeh")
+    # 6) Evaluate Auger coefficient
+    results = calc.calculate_auger_rates(auger_type="eeh")
 ```
+
+> **Note:** When running pyAuger as a `.py` script (rather than in a Jupyter notebook), the code must be wrapped inside an `if __name__ == "__main__":` block. This is required because pyAuger uses Python's `multiprocessing` module for parallel matrix element evaluation, and omitting this guard will cause spawned subprocesses to re-execute the script, leading to errors.
 
 ---
 
