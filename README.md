@@ -1,6 +1,6 @@
-# pyAuger — ab-initio Direct Auger Recombination Calculator
+# pyAuger — ab-initio Auger Recombination Calculator
 
-![Tests](https://img.shields.io/badge/tests-164%20passed-brightgreen?style=flat-square&logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.x-blue?style=flat-square&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     results = calc.calculate_auger_rates(auger_type="eeh")
 ```
 
-> **Note:** When running pyAuger as a `.py` script (rather than in a Jupyter notebook), the code must be wrapped inside an `if __name__ == "__main__":` block. This is required because pyAuger uses Python's `multiprocessing` module for parallel matrix element evaluation, and omitting this guard will cause spawned subprocesses to re-execute the script, leading to errors.
+> **Note:** When running pyAuger as a `.py` script (rather than in a Jupyter notebook), the code must be wrapped inside an `if __name__ == "__main__":` block. This is required because pyAuger uses Python's `multiprocessing` module for parallel matrix element evaluation, and omitting this might lead to errors.
 
 ---
 
@@ -340,7 +340,6 @@ Outputs a CSV with one row per (delta function, FWHM) combination.
 | k-points (Cartesian coordinates in saved `.npy` files) | Å⁻¹ |
 | Carrier concentrations (n, p, n_i, delta_n, doping) | cm⁻³ |
 | Matrix elements M | eV |
-| Matrix elements M² | eV² |
 | Auger coefficients (C_n, C_p) | cm⁶/s |
 
 ---
