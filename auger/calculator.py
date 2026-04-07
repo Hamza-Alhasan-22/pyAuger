@@ -113,6 +113,7 @@ class AugerCalculator:
         Call this **before** :meth:`parse_BS_data` or :meth:`import_parsed_BS_data`
         when the automatic detection would fail (e.g. zero-gap materials).
         """
+        assert firstCB_index-lastVB_index == 1, "firstCB_index must be exactly 1 greater than lastVB_index."
         self.firstCB_index = firstCB_index
         self.lastVB_index = lastVB_index
         self.is_assigned_manually = True
