@@ -184,6 +184,46 @@ class TestContinuationWorkflow:
         # generated (only old ones are loaded)
         assert len(gen2.pairs) == n1
 
+    def test_continue_max_heap_keeps_mode_and_reaches_total(self, fake_parsed_data, tmp_path):
+        calc = AugerCalculator(T=300, nd=0)
+        calc.import_parsed_BS_data(fake_parsed_data)
+        calc.results_folder = str(tmp_path / "run1")
+        os.makedirs(calc.results_folder, exist_ok=True)
+        calc.calculate_carrier_concentrations(delta_n=1e17)
+
+        gen1 = calc.create_auger_pairs(
+            CB_window=0.1, VB_window=0.1,
+            auger_type="eeh",
+            approach="nearest_kpoint",
+            search_mode="Max_Heap",
+            num_top_pairs=2,
+        )
+        if len(gen1.pairs) < 2:
+            pytest.skip("Synthetic data did not generate enough pairs")
+
+        csv_files = sorted([
+            os.path.join(calc.results_folder, f)
+            for f in os.listdir(calc.results_folder)
+            if f.startswith("auger_eeh_pairs") and f.endswith(".csv")
+        ])
+
+        calc2 = AugerCalculator(T=300, nd=0)
+        calc2.import_parsed_BS_data(fake_parsed_data)
+        calc2.results_folder = str(tmp_path / "run2")
+        os.makedirs(calc2.results_folder, exist_ok=True)
+        calc2.calculate_carrier_concentrations(delta_n=1e17)
+        gen2 = calc2.create_auger_pairs(
+            CB_window=0.1, VB_window=0.1,
+            auger_type="eeh",
+            approach="nearest_kpoint",
+            search_mode="Max_Heap",
+            num_top_pairs=4,
+            continue_from_files=csv_files,
+        )
+
+        assert gen2.search_mode == "Max_Heap"
+        assert len(gen2.pairs) == 4
+
 
 # ======================================================================
 # Multiple auger types on same calculator

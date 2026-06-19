@@ -20,12 +20,12 @@ import ast
 import heapq
 import os
 from collections import defaultdict
-from multiprocessing import Pool, cpu_count, get_context
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from pymatgen.core.structure import Structure
+from pymatgen.io.vasp.outputs import Eigenval
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 from . import utilities as ut
@@ -175,8 +175,9 @@ class PairGenerator:
     ----------
     auger_type : {'eeh', 'ehh'}
     arg : tuple or None
-        ``(auger_instance, CB_window, VB_window, approach, is_parallel,
-        search_mode, num_top_pairs, table_name_suffix, poscar_path)``
+        ``(auger_instance, CB_window, VB_window, approach, search_mode,
+        num_top_pairs, table_name_suffix, poscar_path, is_Expand,
+        is_initialize, vasp_folder_to_expand)``
         or *None* when constructing from stored CSV data.
     """
 
@@ -189,20 +190,39 @@ class PairGenerator:
         self.marg_E4: Dict[str, dict] = {auger_type: {}}
 
         if arg is not None:
+            values = tuple(arg)
+            if len(values) >= 6 and isinstance(values[4], bool) and isinstance(values[5], str):
+                raise ValueError(
+                    "PairGenerator argument position 4 is now search_mode. "
+                    "Boolean pair-generation flags are not supported."
+                )
+
+            if len(values) == 8:
+                values = values + (False, False, "all")
+            elif len(values) == 9:
+                values = values + (False, "all")
+            elif len(values) == 10:
+                values = values + ("all",)
+            elif len(values) != 11:
+                raise ValueError(
+                    "PairGenerator arg must contain 8, 9, 10, or 11 values."
+                )
+
             (self.auger_instance, self.CB_window, self.VB_window,
-             self.approach, self.is_parallel, self.search_mode,
-             self.num_top_pairs, table_name_suffix, poscar_path, is_Expand) = arg
+             self.approach, self.search_mode,
+             self.num_top_pairs, table_name_suffix, poscar_path,
+             is_Expand, is_initialize, vasp_folder_to_expand) = values
             self.table_name_suffix = f"_{table_name_suffix}" if table_name_suffix else ""
             if is_Expand:
                 if poscar_path is None:
                     raise ValueError("poscar_path is required for k-point expansion.")
-                self._expand_irr_kpoints(poscar_path)
+                self._expand_irr_kpoints(poscar_path, vasp_folder_to_expand)
 
             # exact_kpoint + no expansion = post-NSCF pair building from CSV,
             # which reads all data from the CSV directly — no energy-state
             # initialisation needed.  All other cases (nearest_kpoint, or
             # exact_kpoint with expansion for the k-point list step) require it.
-            if not (self.approach == "exact_kpoint" and not is_Expand):
+            if is_initialize or not (self.approach == "exact_kpoint" and not is_Expand):
                 self._initialise_energy_states()
         else:
             self.table_name_suffix = ""
@@ -210,67 +230,63 @@ class PairGenerator:
     # ------------------------------------------------------------------
     # Energy-state initialisation
     # ------------------------------------------------------------------
-    def _expand_irr_kpoints(self, poscar_path: str):
-        """
-        Expand irreducible-wedge k-points to the full Brillouin zone.
-
-        Uses spglib (via pymatgen) to find all symmetry-equivalent k-points
-        for each irreducible k-point.  Eigenvalues are duplicated — they are
-        identical for symmetry-related k-points — and the k-point weights are
-        all set to 1 (uniform weighting over the full mesh).
-
-        After this call the following attributes of ``self.auger_instance``
-        are overwritten in-place:
-
-        * ``data_energies``  — shape ``(nbands, N_full)``
-        * ``kpoints``        — shape ``(N_full, 3)`` (Cartesian, Å⁻¹)
-        * ``kpoints_weights`` — all ones, length ``N_full``
-        * ``num_of_kpoints`` — updated to ``N_full``
-
-        Parameters
-        ----------
-        poscar_path : str
-            Path to the VASP POSCAR (or any pymatgen-readable structure file)
-            that was used for the SCF calculation.
-        """
-        ai = self.auger_instance
-        rl = ai.reciprocal_lattice                      # (3, 3) reciprocal lattice
-
-        # ── 1. Parse kgrid from calculator ───────────────────────────
-        kgrid = ai.kgrid                                 # may be tuple, list, or string
+    @staticmethod
+    def _normalise_mesh_dims(kgrid) -> Tuple[int, int, int]:
         if isinstance(kgrid, str):
             kgrid = ast.literal_eval(kgrid)
         mesh_dims = tuple(int(x) for x in kgrid)
+        if len(mesh_dims) != 3:
+            raise ValueError(f"kgrid must contain exactly 3 values; got {mesh_dims}")
+        return mesh_dims
 
-        # ── 2. Full BZ mesh + irreducible mapping via spglib ─────────
+    @staticmethod
+    def _read_regular_kpoints_mesh(folder_path: str) -> Optional[Tuple[int, int, int]]:
+        kpoints_path = os.path.join(folder_path, "KPOINTS")
+        if not os.path.isfile(kpoints_path):
+            return None
+        with open(kpoints_path, "r") as fh:
+            lines = [line.strip() for line in fh if line.strip()]
+        if len(lines) < 4:
+            return None
+        try:
+            if int(lines[1].split()[0]) != 0:
+                return None
+        except (IndexError, ValueError):
+            return None
+        try:
+            return tuple(int(x) for x in lines[3].split()[:3])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _folder_kpoint_count(folder_path: str) -> int:
+        return int(Eigenval(os.path.join(folder_path, "EIGENVAL")).nkpt)
+
+    def _expand_kpoint_block(
+        self,
+        data_block: np.ndarray,
+        kpoints_block: np.ndarray,
+        mesh_dims: Tuple[int, int, int],
+        poscar_path: str,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        ai = self.auger_instance
+
+        rl = ai.reciprocal_lattice
         structure = Structure.from_file(poscar_path)
         analyzer = SpacegroupAnalyzer(structure)
         full_kpts_frac, ir_mapping = analyzer.get_ir_reciprocal_mesh_map(mesh_dims)
-        # full_kpts_frac : (N_full, 3) fractional
-        # ir_mapping     : (N_full,)   each entry = index of its irr. rep.
-
         n_full = len(full_kpts_frac)
 
-        # ── 3. Build irr_index → [full_indices] lookup ───────────────
-        #    irr_to_full[j] = list of full-mesh indices whose
-        #    irreducible representative is j.
         irr_to_full: Dict[int, List[int]] = defaultdict(list)
         for fi, ii in enumerate(ir_mapping):
             irr_to_full[int(ii)].append(fi)
 
-        # Unique irreducible indices (these are positions in full_kpts_frac)
-        irr_indices = np.array(sorted(irr_to_full.keys()))  # (N_irr,)
+        irr_indices = np.array(sorted(irr_to_full.keys()))
+        irr_kpts_frac = full_kpts_frac[irr_indices]
 
-        # ── 4. Match stored k-points → irreducible mesh indices ──────
-        #    stored k-points come from VASP (irreducible wedge, Cartesian).
-        #    Convert both sets to folded fractional coords and match.
         stored_kpts_frac = np.array([
-            ut.to_fractional_coordinate(k, rl) for k in ai.kpoints
-        ])  # (N_stored, 3)
-
-        irr_kpts_frac = full_kpts_frac[irr_indices]  # (N_irr_mesh, 3)
-
-        # Fold both sets to the same BZ convention for reliable matching
+            ut.to_fractional_coordinate(k, rl) for k in kpoints_block
+        ])
         stored_folded = np.array([
             ut.fold_kpoint_to_first_bz(k, convention="vasp_centered")
             for k in stored_kpts_frac
@@ -279,51 +295,179 @@ class PairGenerator:
             ut.fold_kpoint_to_first_bz(k, convention="vasp_centered")
             for k in irr_kpts_frac
         ])
-        
-        # Vectorised nearest-neighbour in fractional coords (PBC-aware)
-        # diff shape: (N_stored, N_irr_mesh, 3)
+
         diff = stored_folded[:, None, :] - irr_folded[None, :, :]
-        diff -= np.round(diff)                              # periodic images
-        dist2 = np.sum(diff ** 2, axis=2)                   # (N_stored, N_irr_mesh)
-        best_match = np.argmin(dist2, axis=1)               # (N_stored,)
+        diff -= np.round(diff)
+        dist2 = np.sum(diff ** 2, axis=2)
+        best_match = np.argmin(dist2, axis=1)
+        stored_to_irr_idx = irr_indices[best_match]
 
-        # Map stored index → irreducible mesh index
-        stored_to_irr_idx = irr_indices[best_match]         # (N_stored,)
-
-        # Sanity check: every match should be very close
         min_dists = np.sqrt(np.min(dist2, axis=1))
         bad = np.where(min_dists > 0.05)[0]
         if len(bad) > 0:
-            print(f"  ⚠  {len(bad)} stored k-points could not be matched "
-                  f"to the spglib mesh (max err = {min_dists[bad].max():.4f}).")
+            print(
+                f"  Warning: {len(bad)} stored k-points could not be matched "
+                f"to the spglib mesh (max err = {min_dists[bad].max():.4f})."
+            )
 
-        # ── 5. Build expanded arrays ─────────────────────────────────
-        nbands = ai.data_energies.shape[0]
-
-        new_energies = np.empty((nbands, n_full), dtype=ai.data_energies.dtype)
+        nbands = data_block.shape[0]
+        new_energies = np.empty((nbands, n_full), dtype=data_block.dtype)
         new_kpoints_cart = np.empty((n_full, 3), dtype=np.float64)
+        full_kpts_cart = full_kpts_frac @ rl
 
-        # Pre-compute Cartesian coords for the full mesh (vectorised)
-        full_kpts_cart = full_kpts_frac @ rl              # (N_full, 3)
-
-        for si in range(len(ai.kpoints)):
+        assigned = np.zeros(n_full, dtype=bool)
+        for si in range(len(kpoints_block)):
             irr_idx = int(stored_to_irr_idx[si])
-            full_idxs = irr_to_full[irr_idx]              # all sym-equiv.
-            new_energies[:, full_idxs] = ai.data_energies[:, si, np.newaxis]
+            full_idxs = irr_to_full[irr_idx]
+            new_energies[:, full_idxs] = data_block[:, si, np.newaxis]
             new_kpoints_cart[full_idxs] = full_kpts_cart[full_idxs]
+            assigned[full_idxs] = True
 
-        new_weights = np.full(n_full, 1.0 / (mesh_dims[0] * mesh_dims[1] * mesh_dims[2]))
+        if not np.all(assigned):
+            missing = int(np.count_nonzero(~assigned))
+            raise ValueError(
+                f"Could not assign energies for {missing} expanded k-points. "
+                "Check poscar_path, k-grid, and the selected VASP folder."
+            )
 
-        # ── 6. Overwrite auger_instance arrays ───────────────────────
-        n_stored = len(ai.kpoints)
-        ai.data_energies = new_energies
-        ai.kpoints = new_kpoints_cart
-        ai.kpoints_weights = new_weights
-        ai.num_of_kpoints = n_full
+        return new_energies, new_kpoints_cart
 
-        print(f"  Expanded k-points: {n_stored} irr → {n_full} full BZ  "
-              f"(mesh {mesh_dims[0]}×{mesh_dims[1]}×{mesh_dims[2]})")
-    
+    def _expand_irr_kpoints(
+        self,
+        poscar_path: str,
+        vasp_folder_to_expand: Union[int, str] = "all",
+    ):
+        """
+        Expand irreducible-wedge k-points to the full Brillouin zone.
+
+        ``vasp_folder_to_expand='all'`` preserves the previous behavior and
+        expands all parsed k-points together. Passing a 0-based integer expands
+        only that VASP folder slice from ``AugerCalculator.vasp_folders`` and
+        leaves the other parsed folders unchanged.
+        """
+        ai = self.auger_instance
+        if isinstance(vasp_folder_to_expand, str) and vasp_folder_to_expand.lower() == "all":
+            vasp_folder_to_expand = "all"
+        original_total = len(ai.kpoints)
+
+        if vasp_folder_to_expand == "all":
+            mesh_dims = self._normalise_mesh_dims(ai.kgrid)
+            print(
+                "  Expanding irreducible k-points for all parsed VASP data "
+                f"(current default, mesh {mesh_dims[0]}x{mesh_dims[1]}x{mesh_dims[2]})."
+            )
+            new_energies, new_kpoints_cart = self._expand_kpoint_block(
+                ai.data_energies,
+                ai.kpoints,
+                mesh_dims,
+                poscar_path,
+            )
+            new_total = len(new_kpoints_cart)
+            ai.data_energies = new_energies
+            ai.kpoints = new_kpoints_cart
+            ai.kpoints_weights = np.full(new_total, 1.0 / new_total)
+            ai.num_of_kpoints = new_total
+            print(
+                f"  Expanded k-points: {original_total:,} irr -> {new_total:,} full BZ "
+                f"(mesh {mesh_dims[0]}x{mesh_dims[1]}x{mesh_dims[2]})"
+            )
+            print(f"  Reset all k-point weights to uniform 1/{new_total:,}.")
+            return
+
+        try:
+            folder_index = int(vasp_folder_to_expand)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "vasp_folder_to_expand must be an integer folder index or 'all'."
+            ) from exc
+
+        vasp_folders = getattr(ai, "vasp_folders", None)
+        if not vasp_folders:
+            if folder_index != 0:
+                raise ValueError(
+                    "AugerCalculator.vasp_folders is not available; only folder "
+                    "index 0 can be selected."
+                )
+            vasp_folders = [None]
+            folder_counts = [original_total]
+        else:
+            vasp_folders = list(vasp_folders)
+            if folder_index < 0 or folder_index >= len(vasp_folders):
+                raise IndexError(
+                    f"vasp_folder_to_expand={folder_index} is out of range for "
+                    f"{len(vasp_folders)} parsed VASP folder(s)."
+                )
+            folder_counts = []
+            for folder in vasp_folders:
+                try:
+                    folder_counts.append(self._folder_kpoint_count(folder))
+                except Exception as exc:
+                    raise ValueError(
+                        f"Could not read k-point count from {folder}/EIGENVAL. "
+                        "This is required when expanding only one parsed VASP folder."
+                    ) from exc
+            if sum(folder_counts) != original_total:
+                raise ValueError(
+                    "The k-point counts read from vasp_folders do not match the "
+                    "currently parsed AugerCalculator data. This selective "
+                    "expansion mode assumes parse_BS_data combined the folders "
+                    "without changing their k-point counts. "
+                    f"Counts from folders: {folder_counts}; parsed total: {original_total}."
+                )
+
+        start = int(sum(folder_counts[:folder_index]))
+        end = start + int(folder_counts[folder_index])
+        selected_folder = vasp_folders[folder_index]
+
+        mesh_dims = None
+        if selected_folder is not None:
+            mesh_dims = self._read_regular_kpoints_mesh(selected_folder)
+        if mesh_dims is None:
+            if folder_index == 0:
+                mesh_dims = self._normalise_mesh_dims(ai.kgrid)
+                print(
+                    "  Warning: could not read a regular mesh from selected "
+                    f"folder {folder_index}; using AugerCalculator.kgrid={mesh_dims}."
+                )
+            else:
+                raise ValueError(
+                    f"Could not determine a regular KPOINTS mesh for VASP folder "
+                    f"index {folder_index}. Selective irreducible expansion needs "
+                    "a regular automatic KPOINTS mesh in that folder."
+                )
+
+        print("  Selective irreducible k-point expansion requested.")
+        print(f"    Parsed VASP folders: {len(vasp_folders)}")
+        for i, count in enumerate(folder_counts):
+            label = "selected" if i == folder_index else "kept as parsed"
+            folder_label = vasp_folders[i] if vasp_folders[i] is not None else "<single parsed dataset>"
+            print(f"    [{i}] {folder_label} : {count:,} k-points ({label})")
+        print(f"    Expanding parsed k-point slice [{start}:{end})")
+        print(f"    Selected mesh: {mesh_dims[0]}x{mesh_dims[1]}x{mesh_dims[2]}")
+
+        expanded_energies, expanded_kpoints = self._expand_kpoint_block(
+            ai.data_energies[:, start:end],
+            ai.kpoints[start:end],
+            mesh_dims,
+            poscar_path,
+        )
+
+        ai.data_energies = np.concatenate(
+            [ai.data_energies[:, :start], expanded_energies, ai.data_energies[:, end:]],
+            axis=1,
+        )
+        ai.kpoints = np.vstack([ai.kpoints[:start], expanded_kpoints, ai.kpoints[end:]])
+        new_total = len(ai.kpoints)
+        ai.kpoints_weights = np.full(new_total, 1.0 / new_total)
+        ai.num_of_kpoints = new_total
+
+        print(
+            f"  Expanded VASP folder index {folder_index}: "
+            f"{folder_counts[folder_index]:,} irr -> {len(expanded_kpoints):,} full BZ k-points."
+        )
+        print(f"  Total parsed k-points after selective expansion: {original_total:,} -> {new_total:,}")
+        print(f"  Reset all k-point weights to uniform 1/{new_total:,}.")
+
     def _initialise_energy_states(self):
         """
         Collect CB / VB states inside the energy windows and sort by
@@ -406,6 +550,86 @@ class PairGenerator:
         before = len(self.pairs)
         self.pairs = [p for p in self.pairs if p.pair_id not in ids]
         print(f"  Excluded {before - len(self.pairs):,} pairs  |  remaining: {len(self.pairs):,}")
+
+    def _desired_pair_total(self) -> Optional[int]:
+        if self.num_top_pairs in (-1, "all", None):
+            return None
+        return max(int(self.num_top_pairs), 0)
+
+    @staticmethod
+    def _continuation_key_from_pair_dict(d: dict) -> Optional[Tuple]:
+        at = d.get("pair_type", "")
+        try:
+            if at == "eeh":
+                return (
+                    int(d["E1_index"]), int(d["E3_index"]), int(d["E4_index"]),
+                    int(d["k1_index"]), int(d["k3_index"]), int(d["k4_index"]),
+                )
+            if at == "ehh":
+                return (
+                    int(d["E1_index"]), int(d["E2_index"]), int(d["E3_index"]),
+                    int(d["k1_index"]), int(d["k2_index"]), int(d["k3_index"]),
+                )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return None
+
+    def _load_continuation_pairs(
+        self,
+        continue_from_files: Union[str, List[str]],
+    ) -> Tuple[Dict[Tuple, bool], set]:
+        if isinstance(continue_from_files, str):
+            continue_from_files = [continue_from_files]
+
+        partial_ids: Dict[Tuple, bool] = {}
+        existing_pair_ids: set = set()
+        loaded_files = 0
+        skipped_missing = 0
+
+        for fp in continue_from_files or []:
+            if not os.path.isfile(fp):
+                print(f"  Warning: previous pair CSV not found, skipping: {fp}")
+                skipped_missing += 1
+                continue
+            prev = ut.read_csv([fp])
+            loaded_files += 1
+            for d in prev:
+                at = d.get("pair_type", "")
+                if at and at != self.auger_type:
+                    continue
+                pair_id = d.get("pair_id")
+                if pair_id is not None and pair_id in existing_pair_ids:
+                    continue
+                if pair_id is not None:
+                    existing_pair_ids.add(pair_id)
+                key = self._continuation_key_from_pair_dict(d)
+                if key is not None:
+                    partial_ids[key] = True
+                self.add_pair(Pair(d))
+
+        if continue_from_files:
+            desired_total = self._desired_pair_total()
+            print(f"  Loaded continuation pair CSV files: {loaded_files}")
+            if skipped_missing:
+                print(f"  Missing continuation pair CSV files skipped: {skipped_missing}")
+            print(f"  Existing pairs loaded: {len(self.pairs):,}")
+            if desired_total is not None:
+                remaining = max(desired_total - len(self.pairs), 0)
+                print(f"  Requested total pairs: {desired_total:,}")
+                print(f"  New pairs still needed: {remaining:,}")
+
+        return partial_ids, existing_pair_ids
+
+    def _trim_to_desired_pair_total(self) -> None:
+        desired_total = self._desired_pair_total()
+        if desired_total is None:
+            return
+        if len(self.pairs) > desired_total:
+            print(
+                f"  Warning: loaded/generated {len(self.pairs):,} pairs, "
+                f"trimming output to requested total {desired_total:,}."
+            )
+            self.pairs = sorted(self.pairs, key=lambda p: p.probability, reverse=True)[:desired_total]
 
     def read_pairs_from_csv(self, file_paths: Union[str, List[str]]) -> List[dict]:
         if isinstance(file_paths, str):
@@ -577,76 +801,195 @@ class PairGenerator:
         self,
         search_mode: str = "Brute_Force",
         num_kpoints: Union[int, str] = "all",
+        skip_partial_pair_ids: Optional[set] = None,
     ) -> List[dict]:
         """
         Build the list of off-grid k-points needed for the ``exact_kpoint``
         approach.  Writes partial pair info so the NSCF results can later be
         matched back.
+
+        Parameters
+        ----------
+        search_mode : {'Brute_Force', 'Max_Heap'}
+            ``Brute_Force`` enumerates every combination (safe but O(N³)).
+            ``Max_Heap`` walks combinations in descending probability order
+            using a priority queue — only the top *num_kpoints* are generated,
+            avoiding the full combinatorial explosion.
+        num_kpoints : int or 'all'
+            How many combinations to keep (sorted by probability).  With
+            ``Max_Heap``, this controls how many the heap pops (not a
+            post-filter), so memory stays bounded.
         """
         print(f"  Generating exact k-point list … (search: {search_mode})")
         rl = self.auger_instance.reciprocal_lattice
+        skip_partial_pair_ids = skip_partial_pair_ids or set()
+        if skip_partial_pair_ids:
+            print(f"  Skipping {len(skip_partial_pair_ids):,} previously generated exact k-points")
+
+        if search_mode == "Max_Heap":
+            return self._generate_exact_kpoint_list_maxheap(
+                rl, num_kpoints, skip_partial_pair_ids
+            )
+        else:
+            return self._generate_exact_kpoint_list_brute(
+                rl, num_kpoints, skip_partial_pair_ids
+            )
+
+    # ---- Brute-force exact k-point list ----
+    def _generate_exact_kpoint_list_brute(
+        self,
+        rl: np.ndarray,
+        num_kpoints: Union[int, str],
+        skip_partial_pair_ids: set,
+    ) -> List[dict]:
         kpoints_list: List[dict] = []
+        skipped_existing = 0
 
         if self.auger_type == "eeh":
             for e1 in self.E1_energies:
                 for e3 in self.E3_energies:
                     for e4 in self.E4_energies:
-                        k2_diff = e3["k"] - e4["k"] + e1["k"]
-                        res = self.exact_kpoint(k2_diff, rl)
-                        pid = f"{e1['band_index']}-X-{e3['band_index']}-{e4['band_index']}-{e1['k_index']}-X-{e3['k_index']}-{e4['k_index']}"
-                        kpoints_list.append({
-                            "partial_pair_id": pid,
-                            "P_134": e1["P"] * e3["P"] * e4["P"],
-                            "E1_index": e1["band_index"], "E3_index": e3["band_index"], "E4_index": e4["band_index"],
-                            "k1_index": e1["k_index"],    "k3_index": e3["k_index"],    "k4_index": e4["k_index"],
-                            "E1": e1["energy"], "E3": e3["energy"], "E4": e4["energy"],
-                            "k1": [float(x) for x in e1["k"]],
-                            "k3": [float(x) for x in e3["k"]],
-                            "k4": [float(x) for x in e4["k"]],
-                            "kw1": e1["kw"], "kw3": e3["kw"], "kw4": e4["kw"],
-                            "k1_frac": [float(x) for x in ut.to_fractional_coordinate(e1["k"], rl)],
-                            "k3_frac": [float(x) for x in ut.to_fractional_coordinate(e3["k"], rl)],
-                            "k4_frac": [float(x) for x in ut.to_fractional_coordinate(e4["k"], rl)],
-                            "k2_target_cart": [float(x) for x in res["kx_target_cart"]],
-                            "k2_target_frac": [float(x) for x in res["kx_target_frac"]],
-                            "k2_target_frac_mapped": [float(x) for x in res["kx_target_frac_mapped"]],
-                            "k2_target_cart_mapped": [float(x) for x in res["kx_target_cart_mapped"]],
-                        })
+                        entry = self._make_exact_entry_eeh(e1, e3, e4, rl)
+                        if entry["partial_pair_id"] in skip_partial_pair_ids:
+                            skipped_existing += 1
+                            continue
+                        kpoints_list.append(entry)
         else:  # ehh
             for e1 in self.E1_energies:
                 for e2 in self.E2_energies:
                     for e3 in self.E3_energies:
-                        k4_diff = e3["k"] + e2["k"] - e1["k"]
-                        res = self.exact_kpoint(k4_diff, rl)
-                        pid = f"{e1['band_index']}-{e2['band_index']}-{e3['band_index']}-X-{e1['k_index']}-{e2['k_index']}-{e3['k_index']}-X"
-                        kpoints_list.append({
-                            "partial_pair_id": pid,
-                            "P_123": e1["P"] * e2["P"] * e3["P"],
-                            "E1_index": e1["band_index"], "E2_index": e2["band_index"], "E3_index": e3["band_index"],
-                            "k1_index": e1["k_index"],    "k2_index": e2["k_index"],    "k3_index": e3["k_index"],
-                            "E1": e1["energy"], "E2": e2["energy"], "E3": e3["energy"],
-                            "k1": [float(x) for x in e1["k"]],
-                            "k2": [float(x) for x in e2["k"]],
-                            "k3": [float(x) for x in e3["k"]],
-                            "kw1": e1["kw"], "kw2": e2["kw"], "kw3": e3["kw"],
-                            "k1_frac": [float(x) for x in ut.to_fractional_coordinate(e1["k"], rl)],
-                            "k2_frac": [float(x) for x in ut.to_fractional_coordinate(e2["k"], rl)],
-                            "k3_frac": [float(x) for x in ut.to_fractional_coordinate(e3["k"], rl)],
-                            "k4_target_cart": [float(x) for x in res["kx_target_cart"]],
-                            "k4_target_frac": [float(x) for x in res["kx_target_frac"]],
-                            "k4_target_frac_mapped": [float(x) for x in res["kx_target_frac_mapped"]],
-                            "k4_target_cart_mapped": [float(x) for x in res["kx_target_cart_mapped"]],
-                        })
+                        entry = self._make_exact_entry_ehh(e1, e2, e3, rl)
+                        if entry["partial_pair_id"] in skip_partial_pair_ids:
+                            skipped_existing += 1
+                            continue
+                        kpoints_list.append(entry)
 
-        print(f"  Generated {len(kpoints_list):,} k-points")
+        print(f"  Generated {len(kpoints_list):,} new combinations (Brute_Force)")
+        if skipped_existing:
+            print(f"  Reused/skipped {skipped_existing:,} existing exact k-points")
         if num_kpoints != "all":
-            if self.auger_type == "eeh":
-                kpoints_list.sort(key=lambda x: x["P_134"], reverse=True)
-            else:
-                kpoints_list.sort(key=lambda x: x["P_123"], reverse=True)
+            prob_key = "P_134" if self.auger_type == "eeh" else "P_123"
+            kpoints_list.sort(key=lambda x: x[prob_key], reverse=True)
             kpoints_list = kpoints_list[:num_kpoints]
-            print(f"  Filtered to {len(kpoints_list):,}")
+            print(f"  Filtered to top {len(kpoints_list):,}")
         return kpoints_list
+
+    # ---- Max-Heap exact k-point list ----
+    def _generate_exact_kpoint_list_maxheap(
+        self,
+        rl: np.ndarray,
+        num_kpoints: Union[int, str],
+        skip_partial_pair_ids: set,
+    ) -> List[dict]:
+        """
+        Priority-queue walk over combinations in descending probability
+        order.  Only the top *num_kpoints* entries are ever materialised,
+        keeping memory bounded even for huge combination spaces.
+
+        The lists ``E1_energies``, ``E3_energies`` (eeh) / ``E2_energies``,
+        ``E3_energies`` (ehh) are already sorted by P descending (done in
+        ``_initialise_energy_lists``), which is what makes the heap valid.
+        """
+        is_eeh = self.auger_type == "eeh"
+        if is_eeh:
+            list_A, list_B, list_C = self.E1_energies, self.E3_energies, self.E4_energies
+        else:
+            list_A, list_B, list_C = self.E1_energies, self.E2_energies, self.E3_energies
+
+        total = len(list_A) * len(list_B) * len(list_C)
+        if num_kpoints == "all":
+            target = None
+        else:
+            target = min(int(num_kpoints), total)
+
+        heap: list = []
+        visited: set = set()
+        results: List[dict] = []
+        skipped_existing = 0
+
+        def _push(i, j, k):
+            if (i, j, k) in visited:
+                return
+            if i >= len(list_A) or j >= len(list_B) or k >= len(list_C):
+                return
+            visited.add((i, j, k))
+            prob = list_A[i]["P"] * list_B[j]["P"] * list_C[k]["P"]
+            heapq.heappush(heap, (-prob, i, j, k))
+
+        _push(0, 0, 0)
+
+        while heap and (target is None or len(results) < target):
+            _, i, j, k = heapq.heappop(heap)
+            a, b, c = list_A[i], list_B[j], list_C[k]
+
+            if is_eeh:
+                entry = self._make_exact_entry_eeh(a, b, c, rl)
+            else:
+                entry = self._make_exact_entry_ehh(a, b, c, rl)
+            if entry["partial_pair_id"] in skip_partial_pair_ids:
+                skipped_existing += 1
+            else:
+                results.append(entry)
+
+            if target is not None and len(results) % 50_000 == 0:
+                print(f"    Max_Heap: {len(results):,}/{target:,} …", end="\r")
+
+            for di, dj, dk in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                _push(i + di, j + dj, k + dk)
+
+        print(f"  Generated {len(results):,} new combinations (Max_Heap)")
+        if skipped_existing:
+            print(f"  Reused/skipped {skipped_existing:,} existing exact k-points")
+        return results
+
+    # ---- Shared helpers for building exact-kpoint entries ----
+    def _make_exact_entry_eeh(self, e1, e3, e4, rl) -> dict:
+        k2_diff = e3["k"] - e4["k"] + e1["k"]
+        res = self.exact_kpoint(k2_diff, rl)
+        pid = (f"{e1['band_index']}-X-{e3['band_index']}-{e4['band_index']}"
+               f"-{e1['k_index']}-X-{e3['k_index']}-{e4['k_index']}")
+        return {
+            "partial_pair_id": pid,
+            "P_134": e1["P"] * e3["P"] * e4["P"],
+            "E1_index": e1["band_index"], "E3_index": e3["band_index"], "E4_index": e4["band_index"],
+            "k1_index": e1["k_index"],    "k3_index": e3["k_index"],    "k4_index": e4["k_index"],
+            "E1": e1["energy"], "E3": e3["energy"], "E4": e4["energy"],
+            "k1": [float(x) for x in e1["k"]],
+            "k3": [float(x) for x in e3["k"]],
+            "k4": [float(x) for x in e4["k"]],
+            "kw1": e1["kw"], "kw3": e3["kw"], "kw4": e4["kw"],
+            "k1_frac": [float(x) for x in ut.to_fractional_coordinate(e1["k"], rl)],
+            "k3_frac": [float(x) for x in ut.to_fractional_coordinate(e3["k"], rl)],
+            "k4_frac": [float(x) for x in ut.to_fractional_coordinate(e4["k"], rl)],
+            "k2_target_cart": [float(x) for x in res["kx_target_cart"]],
+            "k2_target_frac": [float(x) for x in res["kx_target_frac"]],
+            "k2_target_frac_mapped": [float(x) for x in res["kx_target_frac_mapped"]],
+            "k2_target_cart_mapped": [float(x) for x in res["kx_target_cart_mapped"]],
+        }
+
+    def _make_exact_entry_ehh(self, e1, e2, e3, rl) -> dict:
+        k4_diff = e3["k"] + e2["k"] - e1["k"]
+        res = self.exact_kpoint(k4_diff, rl)
+        pid = (f"{e1['band_index']}-{e2['band_index']}-{e3['band_index']}-X"
+               f"-{e1['k_index']}-{e2['k_index']}-{e3['k_index']}-X")
+        return {
+            "partial_pair_id": pid,
+            "P_123": e1["P"] * e2["P"] * e3["P"],
+            "E1_index": e1["band_index"], "E2_index": e2["band_index"], "E3_index": e3["band_index"],
+            "k1_index": e1["k_index"],    "k2_index": e2["k_index"],    "k3_index": e3["k_index"],
+            "E1": e1["energy"], "E2": e2["energy"], "E3": e3["energy"],
+            "k1": [float(x) for x in e1["k"]],
+            "k2": [float(x) for x in e2["k"]],
+            "k3": [float(x) for x in e3["k"]],
+            "kw1": e1["kw"], "kw2": e2["kw"], "kw3": e3["kw"],
+            "k1_frac": [float(x) for x in ut.to_fractional_coordinate(e1["k"], rl)],
+            "k2_frac": [float(x) for x in ut.to_fractional_coordinate(e2["k"], rl)],
+            "k3_frac": [float(x) for x in ut.to_fractional_coordinate(e3["k"], rl)],
+            "k4_target_cart": [float(x) for x in res["kx_target_cart"]],
+            "k4_target_frac": [float(x) for x in res["kx_target_frac"]],
+            "k4_target_frac_mapped": [float(x) for x in res["kx_target_frac_mapped"]],
+            "k4_target_cart_mapped": [float(x) for x in res["kx_target_cart_mapped"]],
+        }
 
     # ------------------------------------------------------------------
     # Internal: build a single pair from three known states + fourth
@@ -725,7 +1068,7 @@ class PairGenerator:
                 k4 = np.array(ee["k4_target_cart"])
                 k4_idx = ee["k4_index"]
                 kw4 = ee["k4_weight"]
-                P4 = ut.fermi_dirac(E4, ai.Efn, ai.T)
+                P4 = ut.fermi_dirac(E4, ai.Efp, ai.T)
                 k4_mapped = np.array(ee["k4_target_cart_mapped"])
             else:
                 raise ValueError(f"Unknown approach: {self.approach}")
@@ -755,18 +1098,26 @@ class PairGenerator:
     # ------------------------------------------------------------------
     # Brute Force
     # ------------------------------------------------------------------
-    def brute_force_pairs(self, partial_ids: dict = {}):
+    def brute_force_pairs(
+        self,
+        partial_ids: Optional[dict] = None,
+        existing_pair_ids: Optional[set] = None,
+    ):
         """
         Enumerate **all** triple combinations and resolve the fourth state
         using the ``nearest_kpoint`` approach.
         """
-        is_eeh = self.auger_type == "eeh"
-
-        if self.is_parallel and self.approach != "exact_kpoint":
-            self._brute_force_parallel(is_eeh)
+        partial_ids = partial_ids or {}
+        existing_pair_ids = existing_pair_ids or set()
+        desired_total = self._desired_pair_total()
+        if desired_total is not None and len(self.pairs) >= desired_total:
+            self._trim_to_desired_pair_total()
+            print("  Requested total already satisfied by continuation files.")
             return
 
-        # ---- Serial path (also the only option for exact_kpoint) ----
+        is_eeh = self.auger_type == "eeh"
+
+        # ---- Serial path ----
         counter = 0
         rl = self.auger_instance.reciprocal_lattice
 
@@ -818,69 +1169,39 @@ class PairGenerator:
                 pair = self._make_pair(e1, e2, e3, resolved,
                                        is_eeh=False, exact_entry=exact_entry)
 
+            if pair.pair_id in existing_pair_ids:
+                continue
             self.add_pair(pair)
+            existing_pair_ids.add(pair.pair_id)
             counter += 1
-            if counter % 10_000 == 0:
+            if counter % 1_000_000 == 0:
                 self._write_checkpoint_current_chunk(to_path=self.auger_instance.results_folder)
                 print(f"    pairs: {counter:,} …", end="\r")
 
-    def _brute_force_parallel(self, is_eeh: bool):
-        """Parallel brute-force using multiprocessing (fork, not spawn)."""
-        n_cores = cpu_count()
-        indices = list(range(len(self.E1_energies)))
-        chunk_sz = max(1, len(indices) // n_cores)
-        chunks = [indices[i:i + chunk_sz] for i in range(0, len(indices), chunk_sz)]
-        print(f"    Parallel: {len(chunks)} chunks on {n_cores} cores")
+            if desired_total is not None and len(self.pairs) >= desired_total:
+                break
 
-        func = self._process_chunk_eeh if is_eeh else self._process_chunk_ehh
-        with get_context("spawn").Pool(processes=n_cores) as pool:
-            for chunk_pairs in pool.imap_unordered(func, [(c,) for c in chunks]):
-                self.pairs.extend(chunk_pairs)
-
-    def _process_chunk_eeh(self, args):
-        idx_chunk, = args
-        pairs_out = []
-        rl = self.auger_instance.reciprocal_lattice
-        for i in idx_chunk:
-            e1 = self.E1_energies[i]
-            for e3 in self.E3_energies:
-                for e4 in self.E4_energies:
-                    E_diff = e3["energy"] - e4["energy"] + e1["energy"]
-                    k_diff = e3["k"] - e4["k"] + e1["k"]
-                    if self.approach == "nearest_kpoint":
-                        res = self.nearest_kpoint(k_diff, E_diff, rl)
-                    else:
-                        continue
-                    pair = self._make_pair(e1, res, e3, None, is_eeh=True)
-                    pairs_out.append(pair)
-        return pairs_out
-
-    def _process_chunk_ehh(self, args):
-        idx_chunk, = args
-        pairs_out = []
-        rl = self.auger_instance.reciprocal_lattice
-        for i in idx_chunk:
-            e1 = self.E1_energies[i]
-            for e2 in self.E2_energies:
-                for e3 in self.E3_energies:
-                    E_diff = e3["energy"] - e1["energy"] + e2["energy"]
-                    k_diff = e3["k"] - e1["k"] + e2["k"]
-                    if self.approach == "nearest_kpoint":
-                        res = self.nearest_kpoint(k_diff, E_diff, rl)
-                    else:
-                        continue
-                    pair = self._make_pair(e1, e2, e3, res, is_eeh=False)
-                    pairs_out.append(pair)
-        return pairs_out
+        self._trim_to_desired_pair_total()
 
     # ------------------------------------------------------------------
     # Max Heap
     # ------------------------------------------------------------------
-    def max_heap_pairs(self, multiplier_top_k: int = 1):
+    def max_heap_pairs(
+        self,
+        multiplier_top_k: int = 1,
+        existing_pair_ids: Optional[set] = None,
+    ):
         """
         Priority-queue walk: retrieve the *top-N* most probable pairs
         without enumerating all combinations.
         """
+        existing_pair_ids = existing_pair_ids or set()
+        desired_total = self._desired_pair_total()
+        if desired_total is not None and len(self.pairs) >= desired_total:
+            self._trim_to_desired_pair_total()
+            print("  Requested total already satisfied by continuation files.")
+            return
+
         is_eeh = self.auger_type == "eeh"
         rl = self.auger_instance.reciprocal_lattice
 
@@ -890,11 +1211,10 @@ class PairGenerator:
             list_A, list_B, list_C = self.E1_energies, self.E2_energies, self.E3_energies
 
         total = len(list_A) * len(list_B) * len(list_C)
-        if self.num_top_pairs == -1:
+        if desired_total is None:
             target = total
         else:
-            target = min(self.num_top_pairs * multiplier_top_k, total)
-        actual_top = min(self.num_top_pairs if self.num_top_pairs > 0 else total, total)
+            target = min(max(desired_total, len(self.pairs)) * max(1, multiplier_top_k), total)
 
         heap: list = []
         visited: set = set()
@@ -923,8 +1243,10 @@ class PairGenerator:
 
         _push(0, 0, 0)
 
-        while heap and len(results) < target:
+        popped = 0
+        while heap and popped < target and (desired_total is None or len(self.pairs) < desired_total):
             neg_p, i, j, k, res = heapq.heappop(heap)
+            popped += 1
             a, b, c = list_A[i], list_B[j], list_C[k]
 
             if is_eeh:
@@ -932,18 +1254,24 @@ class PairGenerator:
             else:
                 pair = self._make_pair_from_heap(a, b, c, res, is_eeh=False)
 
-            self.add_pair(pair)
-            results.append(pair)
-            if len(results) % 10_000 == 0:
+            if pair.pair_id not in existing_pair_ids:
+                self.add_pair(pair)
+                existing_pair_ids.add(pair.pair_id)
+                results.append(pair)
+            if results and len(results) % 1_000_000 == 0:
                 self._write_checkpoint_current_chunk(to_path=self.auger_instance.results_folder)
                 print(f"    pairs: {len(results):,} …", end="\r")
 
             for di, dj, dk in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
                 _push(i + di, j + dj, k + dk)
 
-        # Trim to requested top N
-        if self.num_top_pairs > 0 and self.num_top_pairs != -1:
-            self.pairs = sorted(self.pairs, key=lambda p: p.probability, reverse=True)[:actual_top]
+        if desired_total is not None and len(self.pairs) < desired_total and target < total:
+            print(
+                f"  Warning: Max_Heap reached the search budget ({target:,} candidates) "
+                f"before the requested total ({desired_total:,}) was filled. "
+                "Increase pair_generation.multiplier if more new pairs are needed."
+            )
+        self._trim_to_desired_pair_total()
 
     def _make_pair_from_heap(self, e_a, res_or_e2, e_b, e_c_or_res, *, is_eeh: bool) -> Pair:
         """Build a Pair from max-heap pop results."""
@@ -1006,7 +1334,8 @@ class PairGenerator:
         nscf_folders : str or list[str]
             Required for ``exact_kpoint`` approach.
         continue_from_files : str or list[str]
-            CSV file(s) of previously-generated pairs (Brute_Force only).
+            CSV file(s) of previously-generated pairs. Supported for both
+            Brute_Force and Max_Heap, and for nearest_kpoint and exact_kpoint.
         exact_kpoints_csv : str or None
             Explicit path to the ``exact_kpoints_<type>_<XX>.csv`` file.
             If *None*, the path is auto-discovered from ``results_folder``.
@@ -1014,6 +1343,15 @@ class PairGenerator:
         """
         if isinstance(continue_from_files, str):
             continue_from_files = [continue_from_files]
+        else:
+            continue_from_files = list(continue_from_files or [])
+
+        partial_ids, existing_pair_ids = self._load_continuation_pairs(continue_from_files)
+        desired_total = self._desired_pair_total()
+        if desired_total is not None and len(self.pairs) >= desired_total:
+            self._trim_to_desired_pair_total()
+            print(f"\n  Pair creation complete: {len(self.pairs):,} pairs")
+            return
 
         # ---- Prepare nscf folders ----
         if nscf_folders is not None:
@@ -1026,39 +1364,15 @@ class PairGenerator:
         # ---- exact_kpoint: read CSV + NSCF, build pairs directly ----
         if self.approach == "exact_kpoint":
             self._prepare_exact_kpoint_data(nscf_folders, exact_kpoints_csv)
-            self._build_exact_kpoint_pairs()
+            self._build_exact_kpoint_pairs(existing_pair_ids=existing_pair_ids)
             print(f"\n  Pair creation complete: {len(self.pairs):,} pairs")
             return
 
-        # ---- Load previously computed pairs (for continuation) ----
-        partial_ids: dict = {}
-        if continue_from_files:
-            if self.search_mode != "Brute_Force":
-                print("  Warning: continuation only works with Brute_Force. Switching.")
-                self.search_mode = "Brute_Force"
-            for fp in continue_from_files:
-                if not os.path.isfile(fp):
-                    print(f"  Warning: {fp} not found, skipping.")
-                    continue
-                prev = ut.read_csv([fp])
-                for d in prev:
-                    at = d.get("pair_type", "")
-                    if at == "eeh":
-                        key = (d["E1_index"], d["E3_index"], d["E4_index"],
-                               d["k1_index"], d["k3_index"], d["k4_index"])
-                    elif at == "ehh":
-                        key = (d["E1_index"], d["E2_index"], d["E3_index"],
-                               d["k1_index"], d["k2_index"], d["k3_index"])
-                    else:
-                        continue
-                    partial_ids[key] = True
-                    self.add_pair(Pair(d))
-
         # ---- Dispatch ----
         if self.search_mode == "Brute_Force":
-            self.brute_force_pairs(partial_ids)
+            self.brute_force_pairs(partial_ids, existing_pair_ids=existing_pair_ids)
         elif self.search_mode == "Max_Heap":
-            self.max_heap_pairs(multiplier_top_k=multiplier)
+            self.max_heap_pairs(multiplier_top_k=multiplier, existing_pair_ids=existing_pair_ids)
         else:
             raise ValueError(f"Unknown search_mode: '{self.search_mode}'")
 
@@ -1068,22 +1382,25 @@ class PairGenerator:
     # exact-kpoint data-loading helper
     # ------------------------------------------------------------------
     @staticmethod
-    def _find_closest_band_at_kpoint(energy, data, kpt_idx):
-        """Find closest band to *energy* at k-point column *kpt_idx*.
+    def _find_closest_band_at_kpoint(energy, data, kpt_idx, band_range=None):
+        if band_range is None:
+            lo, hi = 0, len(data)
+        else:
+            lo, hi = band_range
 
-        Returns ``(band_index, energy)``.
-        """
-        best_band = 0
-        best_E = 0.0
+        best_band = lo
+        best_E = float(data[lo, kpt_idx])
         min_diff = float("inf")
-        for bi in range(len(data)):
+
+        for bi in range(lo, hi):
             e = float(data[bi, kpt_idx])
             d = abs(e - energy)
             if d < min_diff:
                 min_diff = d
                 best_band = bi
                 best_E = e
-        return best_band, best_E
+
+        return best_band, best_E, min_diff
 
     def _prepare_exact_kpoint_data(self, nscf_folders, exact_kpoints_csv=None):
         """Read exact-kpoint CSV and NSCF EIGENVAL data, resolve E2 / E4.
@@ -1122,13 +1439,13 @@ class PairGenerator:
         folder_weights: dict = {}
         for fi, folder in enumerate(nscf_folders):
             data, _, _, weights = ut.read_nscf_results([folder])
-            vbm_energy = float(np.max(data[ai.firstCB_index - 4:ai.firstCB_index]))
+            # vbm_energy = float(np.max(data[ai.firstCB_index - 4:ai.firstCB_index]))
             if ai.scissor_shift != 0.0:
                 data = data.copy()
                 for bi in range(ai.firstCB_index, len(data)):
                     data[bi] = [e + ai.scissor_shift for e in data[bi]]
             key = fi + 1
-            folder_data[key]    = data - vbm_energy
+            folder_data[key]    = data - ai.E_Fermi
             folder_weights[key] = weights
 
         self.exact_kpoints_dict: dict = {}
@@ -1141,16 +1458,16 @@ class PairGenerator:
 
             if is_eeh:
                 E_diff = item["E3"] - item["E4"] + item["E1"]
-                E2_idx, E2 = self._find_closest_band_at_kpoint(
-                    E_diff, data_wc, target_nscf)
+                E2_idx, E2, E2_residual = self._find_closest_band_at_kpoint(
+                    E_diff, data_wc, target_nscf, band_range=(ai.firstCB_index, len(data_wc)))
                 item["E2"]       = E2
                 item["E2_index"] = E2_idx
                 item["k2_index"] = target_nscf   # local within k2_wc_index folder
                 item["k2_weight"] = float(weights_wc[target_nscf])
             else:
                 E_diff = item["E3"] - item["E1"] + item["E2"]
-                E4_idx, E4 = self._find_closest_band_at_kpoint(
-                    E_diff, data_wc, target_nscf)
+                E4_idx, E4, E4_residual = self._find_closest_band_at_kpoint(
+                    E_diff, data_wc, target_nscf, band_range=(0, ai.firstCB_index))
                 item["E4"]       = E4
                 item["E4_index"] = E4_idx
                 item["k4_index"] = target_nscf   # local within k4_wc_index folder
@@ -1160,7 +1477,7 @@ class PairGenerator:
     # ------------------------------------------------------------------
     # Build pairs directly from exact-kpoint CSV rows
     # ------------------------------------------------------------------
-    def _build_exact_kpoint_pairs(self):
+    def _build_exact_kpoint_pairs(self, existing_pair_ids: Optional[set] = None):
         """
         Build :class:`Pair` objects directly from ``exact_kpoints_dict``.
 
@@ -1176,8 +1493,22 @@ class PairGenerator:
         """
         ai = self.auger_instance
         is_eeh = self.auger_type == "eeh"
+        existing_pair_ids = existing_pair_ids or set()
+        desired_total = self._desired_pair_total()
+        if desired_total is not None and len(self.pairs) >= desired_total:
+            self._trim_to_desired_pair_total()
+            print("  Requested total already satisfied by continuation files.")
+            return
+        built_new = 0
 
-        for item in self.exact_kpoints_dict.values():
+        prob_key = "P_134" if is_eeh else "P_123"
+        exact_rows = sorted(
+            self.exact_kpoints_dict.values(),
+            key=lambda row: row.get(prob_key, 0.0),
+            reverse=True,
+        )
+
+        for item in exact_rows:
 
             if is_eeh:
                 E1, E1_idx = item["E1"], item["E1_index"]
@@ -1288,9 +1619,19 @@ class PairGenerator:
                 pair.k2_wc_index = k2_wc
                 pair.k3_wc_index = k3_wc
                 pair.k4_wc_index = k4_wc
+            if pair.pair_id in existing_pair_ids:
+                continue
             self.add_pair(pair)
+            existing_pair_ids.add(pair.pair_id)
+            built_new += 1
+            if desired_total is not None and len(self.pairs) >= desired_total:
+                break
 
-        print(f"    Built {len(self.pairs):,} pairs from exact k-point CSV")
+        self._trim_to_desired_pair_total()
+        print(
+            f"    Built {built_new:,} new pairs from exact k-point CSV "
+            f"({len(self.pairs):,} total in memory)"
+        )
 
 
 # ======================================================================

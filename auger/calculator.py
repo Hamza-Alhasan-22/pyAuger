@@ -124,10 +124,14 @@ class AugerCalculator:
     # ------------------------------------------------------------------
     def parse_BS_data(
         self,
-        folder_path: str = ".",
+        folder_path: Union[str, List[str]] = ".",
         write_path: str = "",
         scissor_shift: float = 0.0,
         force_gap: Optional[float] = None,
+        expand_first_folder_to_full_bz: bool = False,
+        expansion_poscar_path: Optional[str] = None,
+        expansion_kgrid: Optional[Union[int, str, Sequence[int]]] = None,
+        expansion_match_tolerance: float = 0.05,
     ) -> None:
         """
         Parse VASP output files and write band-structure arrays to disk.
@@ -138,24 +142,58 @@ class AugerCalculator:
 
         Parameters
         ----------
-        folder_path : str
-            Directory containing VASP output files.
+        folder_path : str or list[str]
+            Directory (or list of directories) containing VASP output files.
+            When a list is given, each folder is read independently and the
+            resulting k-points, energies, and weights are concatenated into a
+            single combined dataset.  Indices from the first folder are kept
+            as-is; subsequent folders are shifted so the output looks as if it
+            came from one VASP run.
         write_path : str
             Where to save parsed data (created if needed).
         scissor_shift : float
             Rigid shift (eV) applied to conduction bands.
         force_gap : float or None
             If given, overrides *scissor_shift* to enforce this exact gap.
+        expand_first_folder_to_full_bz : bool
+            If ``True``, expand the first folder's symmetry-reduced k-points
+            to the full BZ before concatenating folders and before rewriting
+            adaptive-mode k-point weights. Use this for adaptive exact-kpoint
+            parsing when the first folder is the main VASP calculation and it
+            was not run with ``ISYM=-1``.
+        expansion_poscar_path : str or None
+            POSCAR used for the first-folder symmetry expansion. Defaults to
+            ``folder_path[0]/POSCAR``.
+        expansion_kgrid : int, sequence of 3 ints, str, or None
+            K-point mesh dimensions used for the first-folder expansion. If
+            omitted, the mesh is inferred from the first folder's KPOINTS.
+        expansion_match_tolerance : float
+            Fractional-coordinate tolerance for matching the first folder's
+            stored irreducible k-points to the symmetry-reduced mesh.
         """
+        # Normalise to list
+        if isinstance(folder_path, str):
+            folder_paths = [folder_path]
+        else:
+            folder_paths = list(folder_path)
+        if not folder_paths:
+            raise ValueError("folder_path must contain at least one VASP folder.")
+        multi_folder = len(folder_paths) > 1
+
         print(f"\n{'─'*90}")
-        print(f"📂 Parsing VASP data from: {folder_path}")
+        if multi_folder:
+            print(f"📂 Parsing VASP data from {len(folder_paths)} folders (combined mode)")
+            for i, fp in enumerate(folder_paths):
+                print(f"   [{i+1}] {fp}")
+        else:
+            print(f"📂 Parsing VASP data from: {folder_paths[0]}")
         print(f"{'─'*90}")
 
-        bs = BSVasprun(f"{folder_path}/vasprun.xml")
-        vrun = Vasprun(f"{folder_path}/vasprun.xml")
+        # ── Read the *first* folder for material / physical properties ──
+        fp0 = folder_paths[0]
+        bs = BSVasprun(f"{fp0}/vasprun.xml")
+        vrun = Vasprun(f"{fp0}/vasprun.xml")
 
-        dielectric_tensor = np.matrix(vrun.epsilon_static)
-        dielectric = float(np.trace(dielectric_tensor) / 3)
         volume = bs.final_structure.volume  # Å³
 
         # Thomas–Fermi wave-vector
@@ -168,9 +206,9 @@ class AugerCalculator:
         omega_p = np.sqrt(
             (n_val * 1e30) * eV**2 / (M_E * EPSILON_0)
         )  # rad/s
-        
+
         # Structure analysis
-        structure_ = Structure.from_file(f"{folder_path}/POSCAR")
+        structure_ = Structure.from_file(f"{fp0}/POSCAR")
         analyzer_ = SpacegroupAnalyzer(structure_)
         CrystalSystem = analyzer_.get_crystal_system()
         Space_group = analyzer_.get_space_group_symbol()
@@ -179,21 +217,129 @@ class AugerCalculator:
         b1, b2, b3 = reciprocal_lattice.tolist()
 
         bandstructure = bs.get_band_structure(
-            kpoints_filename=f"{folder_path}/KPOINTS"
+            kpoints_filename=f"{fp0}/KPOINTS"
         )
         material_name = bandstructure.structure.reduced_formula
         band_gap = round(bandstructure.get_band_gap()["energy"], 4)
-        print(f"  Material: {material_name}  |  Band gap: {band_gap} eV")
+        print(f"  Material: {material_name}  |  Band gap (folder 1): {band_gap} eV")
 
-        data = bandstructure.bands[Spin(1)]
-        Efermi = round(bandstructure.efermi, 4)
+        # ── Collect energies / k-points / weights from all folders ───────
+        all_data = []
+        all_cart = []
+        all_weights = []
+        kgrid_first = None
+        Efermi_ref = None  # Efermi from the first folder — common reference
 
+        for fi, fp in enumerate(folder_paths):
+            if fi == 0:
+                bs_i = bs
+                bandstructure_i = bandstructure
+            else:
+                bs_i = BSVasprun(f"{fp}/vasprun.xml")
+                bandstructure_i = bs_i.get_band_structure(
+                    kpoints_filename=f"{fp}/KPOINTS"
+                )
+
+            data_i = bandstructure_i.bands[Spin(1)].copy()
+            eigenvalues_i = Eigenval(f"{fp}/EIGENVAL")
+            nkpt_i = eigenvalues_i.nkpt
+            if nkpt_i != len(bandstructure_i.kpoints):
+                raise ValueError(
+                    f"EIGENVAL and vasprun.xml disagree on the number of "
+                    f"k-points in folder [{fi + 1}]: {nkpt_i} vs "
+                    f"{len(bandstructure_i.kpoints)}."
+                )
+
+            frac_i = np.array([
+                ut.fold_kpoint_to_first_bz(
+                    bandstructure_i.kpoints[j].frac_coords,
+                    convention="vasp_centered",
+                )
+                for j in range(nkpt_i)
+            ])
+            cart_i = [bandstructure_i.kpoints[j].cart_coords for j in range(nkpt_i)]
+            weights_i = list(eigenvalues_i.kpoints_weights)
+
+            if fi == 0:
+                kgrid_first = bs_i.kpoints.kpts[0]
+                Efermi_ref = bandstructure_i.efermi
+                Efermi = Efermi_ref
+
+                if expand_first_folder_to_full_bz:
+                    poscar_for_expansion = expansion_poscar_path or f"{fp}/POSCAR"
+                    if expansion_kgrid is None:
+                        try:
+                            resolved_kgrid = ut._normalise_kgrid(kgrid_first)
+                        except Exception as exc:
+                            raise ValueError(
+                                "expand_first_folder_to_full_bz=True requires "
+                                "a regular source k-grid. Could not infer it "
+                                "from the first folder's KPOINTS; pass "
+                                "expansion_kgrid explicitly, for example "
+                                "expansion_kgrid=(6, 6, 6)."
+                            ) from exc
+                    else:
+                        resolved_kgrid = ut._normalise_kgrid(expansion_kgrid)
+
+                    original_nkpt_i = nkpt_i
+                    data_i, frac_i, weights_i = ut._expand_irr_kpoints_for_adaptive(
+                        data_energies=data_i,
+                        stored_kpoints_frac=frac_i,
+                        mesh_dims=resolved_kgrid,
+                        poscar_path=poscar_for_expansion,
+                        match_tolerance=expansion_match_tolerance,
+                    )
+                    cart_i = [
+                        ut.to_cartesian_coordinate(kf, reciprocal_lattice)
+                        for kf in frac_i
+                    ]
+                    weights_i = list(weights_i)
+                    nkpt_i = data_i.shape[1]
+                    kgrid_first = list(resolved_kgrid)
+                    print(
+                        f"  Folder [1] expanded before weight handling: "
+                        f"{original_nkpt_i} -> {nkpt_i} k-points"
+                    )
+
+            # Align ALL folders to the first folder's Efermi
+            data_i -= Efermi_ref
+
+            all_data.append(data_i)
+            all_cart.extend(cart_i)
+            all_weights.extend(weights_i)
+
+            if multi_folder:
+                print(f"  Folder [{fi+1}]: {nkpt_i} k-points, "
+                      f"own Efermi={bandstructure_i.efermi:.4f} eV")
+
+        # Concatenate band energies along the k-point axis
+        data = np.concatenate(all_data, axis=1)
+        cart_coords = all_cart
+
+        # Editting weights:
+        if multi_folder:
+            print(f"\n  Combining data from all folders …")
+            num_all_weights = len(all_weights)
+            kpoints_weights = [1/num_all_weights] * num_all_weights  # Uniform weights for combined dataset
+            print(f"  Editting so that: all k-points weights = 1/num_all_kpoints (uniform)")
+            if expand_first_folder_to_full_bz:
+                print("  First folder was expanded before the uniform weight rewrite.")
+            else:
+                print(f"  uniform --> all the original k-points weights are expected to be 1 (i.e, ISYM = -1)")
+        else:
+            kpoints_weights = all_weights
+
+        if len(kpoints_weights) != data.shape[1]:
+            raise ValueError(
+                "Number of k-point weights does not match parsed energies: "
+                f"{len(kpoints_weights)} weights vs {data.shape[1]} k-points."
+            )
+
+        # Find CB/VB from the combined data (Efermi-aligned → Efermi is at 0)
         if self.is_assigned_manually:
             firstCB, lastVB = self.firstCB_index, self.lastVB_index
         else:
-            firstCB, lastVB = ut.get_firstCB_and_lastVB(data, Efermi)
-
-        data -= bandstructure.efermi
+            firstCB, lastVB = ut.get_firstCB_and_lastVB(data, 0.0)
 
         if force_gap is not None:
             if scissor_shift != 0.0:
@@ -206,17 +352,12 @@ class AugerCalculator:
             print(f"  Applying scissor shift: {scissor_shift:+.4f} eV")
             data[firstCB:] += scissor_shift
 
-        data -= np.max(data[lastVB])  # VBM → 0 eV
         CBM = float(np.min(data[firstCB]))
         VBM = float(np.max(data[lastVB]))
         band_gap_after_shift = CBM - VBM
 
-        eigenvalues = Eigenval(f"{folder_path}/EIGENVAL")
-        kpoints_weights = eigenvalues.kpoints_weights
-        XX = eigenvalues.nkpt
-        cart_coords = [bandstructure.kpoints[i].cart_coords for i in range(XX)]
-        kgrid = bs.kpoints.kpts[0]
-        X = int(kgrid[0])
+        XX = data.shape[1]  # total k-points across all folders
+        X = int(kgrid_first[0])
 
         if write_path:
             os.makedirs(write_path, exist_ok=True)
@@ -229,22 +370,26 @@ class AugerCalculator:
             "material_name", "Crystal_System", "Space_Group", "X", "XX", "E_Fermi", "nbands", "nkpoints",
             "kgrid", "scissor_shift", "band_gap", "band_gap_after_shift",
             "firstCB_index", "lastVB_index", "CBM", "VBM",
-            "volume", "dielectric_constant",
+            "volume",
             "b1", "b2", "b3", "NELECT", "q_TF", "omega_p",
         ]
         vals = [
-            material_name, CrystalSystem, Space_group, X, XX, Efermi, eigenvalues.nbands, data.shape[1],
-            kgrid, scissor_shift,
+            material_name, CrystalSystem, Space_group, X, XX, Efermi, data.shape[0], data.shape[1],
+            list(kgrid_first), scissor_shift,
             band_gap,
             band_gap_after_shift,
             firstCB, lastVB, CBM, VBM,
-            round(volume, 4), dielectric,
+            round(volume, 4),
             b1, b2, b3, nelec, q_TF, omega_p,
         ]
         with open(f"{write_path}/band_info.txt", "w") as f:
             for k, v in zip(keys, vals):
                 f.write(f"{k} {v}\n")
+            # Always store the source VASP folder(s) as a JSON array
+            import json as _json
+            f.write(f"vasp_folders {_json.dumps(folder_paths)}\n")
 
+        print(f"  Total combined k-points: {XX}")
         print(f"  Saved to: {write_path}/")
         print(f"{'─'*90}\n")
 
@@ -294,12 +439,19 @@ class AugerCalculator:
         self.CBM = info.get("CBM", float(np.min(self.data_energies[self.firstCB_index])))
         self.VBM = info.get("VBM", float(np.max(self.data_energies[self.lastVB_index])))
 
-        self.dielectric_constant = info.get("dielectric_constant") or None
+        self.dielectric_constant = (
+            info.get("dielectric_constant_used_in_matrix_elements")
+            or info.get("dielectric_constant")
+            or None
+        )
         self.volume = info["volume"]
         self.reciprocal_lattice = np.array([info["b1"], info["b2"], info["b3"]])
         self.nelec = info["NELECT"]
         self.q_TF = info["q_TF"]
         self.omega_p = info["omega_p"]
+
+        # Restore multi-folder source paths
+        self.vasp_folders = info.get("vasp_folders", None)
 
         # Optionally restore carrier-concentration data
         for attr in ("Ef_eq", "ni", "n", "p", "delta_n", "Efn", "Efp"):
@@ -489,31 +641,146 @@ class AugerCalculator:
         VB_window: float,
         auger_type: str,
         poscar_path: str,
-        search_mode: str = "Brute_Force",
+        search_mode: str = "Max_Heap",
         num_kpoints: Union[int, str] = "all",
+        is_expanded_from_irreducible: bool = True,
+        vasp_folder_to_expand: Union[int, str] = "all",
+        continue_from_files: Union[str, List[str]] = [],
     ) -> None:
         """
         Generate the list of off-grid k-points required for the ``exact_kpoint``
         approach.  Must be called *before* running NSCF calculations.
+
+        Parameters
+        ----------
+        continue_from_files : str or list[str], optional
+            Previous exact-kpoint CSV files to load read-only. Existing
+            ``partial_pair_id`` values are skipped, and newly generated CSV
+            chunks start at the next numeric suffix.
+        vasp_folder_to_expand : int or 'all', optional
+            Used only when ``is_expanded_from_irreducible=True``. ``'all'``
+            preserves the previous behavior. An integer expands only the
+            selected 0-based folder from ``self.vasp_folders``.
         """
         print(f"\n{'='*90}")
         print(f"{'EXACT K-POINT LIST':^90}")
         print(f"{'='*90}")
+        if isinstance(vasp_folder_to_expand, str) and vasp_folder_to_expand.lower() == "all":
+            vasp_folder_to_expand = "all"
+        if is_expanded_from_irreducible:
+            if vasp_folder_to_expand == "all":
+                print("  Irreducible expansion: all parsed VASP folders/data")
+            else:
+                print(
+                    "  Irreducible expansion: only parsed VASP folder index "
+                    f"{vasp_folder_to_expand}"
+                )
+        else:
+            print("  Irreducible expansion: disabled")
+
+        base_name = f"exact_kpoints_{auger_type}_{self.XX}"
+        if isinstance(continue_from_files, str):
+            continue_from_files = [continue_from_files]
+        else:
+            continue_from_files = list(continue_from_files or [])
+
+        def _exact_csv_index(path: str) -> int:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            if stem == base_name:
+                return 1
+            prefix = f"{base_name}_"
+            if stem.startswith(prefix):
+                suffix = stem[len(prefix):]
+                if suffix.isdigit():
+                    return int(suffix)
+            return 0
+
+        previous_partial_ids: set = set()
+        next_file_index = 1
+        loaded_files: List[str] = []
+        missing_files: List[str] = []
+        if continue_from_files:
+            print("  Exact-kpoint continuation requested.")
+            for fp in continue_from_files:
+                if not os.path.isfile(fp):
+                    print(f"  Warning: previous exact-kpoint CSV not found, skipping: {fp}")
+                    missing_files.append(fp)
+                    continue
+                rows = ut.read_csv([fp])
+                loaded_files.append(fp)
+                for row in rows:
+                    pid = row.get("partial_pair_id")
+                    if pid is not None:
+                        previous_partial_ids.add(pid)
+                file_index = _exact_csv_index(fp)
+                if file_index == 0:
+                    print(
+                        f"  Warning: could not infer numeric suffix from {fp}; "
+                        "it will not affect the next output suffix."
+                    )
+                else:
+                    next_file_index = max(next_file_index, file_index + 1)
+
+            print(f"  Loaded previous exact-kpoint CSV files: {len(loaded_files)}")
+            for fp in loaded_files:
+                print(f"    {fp}")
+            if missing_files:
+                print(f"  Missing exact-kpoint CSV files skipped: {len(missing_files)}")
+            print(f"  Previous exact k-points reused: {len(previous_partial_ids):,}")
+            print(f"  Next exact-kpoint CSV suffix: _{next_file_index}")
+
+        requested_num = num_kpoints
+        if previous_partial_ids and num_kpoints != "all":
+            remaining = max(int(num_kpoints) - len(previous_partial_ids), 0)
+            requested_num = remaining
+            print(
+                f"  Requested total exact k-points: {int(num_kpoints):,}; "
+                f"new exact k-points to generate: {remaining:,}"
+            )
 
         pairs = PairGenerator(
             auger_type,
-            (self, CB_window, VB_window, "exact_kpoint", False, search_mode, -1, "", poscar_path, True),
+            (
+                self, CB_window, VB_window, "exact_kpoint",
+                search_mode, -1, "", poscar_path,
+                is_expanded_from_irreducible, True, vasp_folder_to_expand,
+            ),
         )
-        kpoints_list = pairs.generate_exact_kpoint_list(search_mode, num_kpoints)
+        kpoints_list = pairs.generate_exact_kpoint_list(
+            search_mode,
+            requested_num,
+            skip_partial_pair_ids=previous_partial_ids,
+        )
 
         key = "P_134" if auger_type == "eeh" else "P_123"
         kpoints_list.sort(key=lambda x: x[key], reverse=True)
-        ut.write_to_csv(
-            kpoints_list,
-            f"exact_kpoints_{auger_type}_{self.XX}",
-            folder_to_save=self.results_folder,
-        )
-        print(f"  Saved {len(kpoints_list):,} k-points → exact_kpoints_{auger_type}_{self.XX}.csv")
+        if continue_from_files:
+            saved_files: List[str] = []
+            if kpoints_list:
+                out_index = next_file_index
+                for start in range(0, len(kpoints_list), 1_000_000):
+                    chunk = kpoints_list[start:start + 1_000_000]
+                    chunk_name = f"{base_name}_{out_index}"
+                    while os.path.exists(os.path.join(self.results_folder, f"{chunk_name}.csv")):
+                        print(f"  Warning: output file already exists, skipping suffix _{out_index}")
+                        out_index += 1
+                        chunk_name = f"{base_name}_{out_index}"
+                    ut.write_to_csv(chunk, chunk_name, folder_to_save=self.results_folder)
+                    saved_files.append(os.path.join(self.results_folder, f"{chunk_name}.csv"))
+                    out_index += 1
+            print(f"  Saved {len(kpoints_list):,} new exact k-points")
+            for fp in saved_files:
+                print(f"    {fp}")
+            if not saved_files:
+                print("  No new exact-kpoint CSV files were written.")
+        else:
+            ut.write_to_csv(
+                kpoints_list,
+                base_name,
+                folder_to_save=self.results_folder,
+            )
+        if not continue_from_files:
+            print(f"  Saved {len(kpoints_list):,} k-points -> {base_name}.csv")
         print(f"{'='*90}\n")
 
     # ------------------------------------------------------------------
@@ -526,7 +793,6 @@ class AugerCalculator:
         auger_type: str,
         *,
         approach: str = "nearest_kpoint",
-        is_parallel: bool = False,
         search_mode: str = "Max_Heap",
         nscf_folders: Optional[Union[str, List[str]]] = None,
         num_top_pairs: Union[int, str] = "all",
@@ -545,8 +811,6 @@ class AugerCalculator:
             Energy windows above CBM / below VBM (eV).
         auger_type : {'eeh', 'ehh'}
         approach : {'nearest_kpoint', 'exact_kpoint'}
-        is_parallel : bool
-            Use multiprocessing for ``Brute_Force`` search.
         search_mode : {'Max_Heap', 'Brute_Force'}
         nscf_folders : str or list[str]
             Required when *approach* = ``exact_kpoint``.
@@ -599,7 +863,7 @@ class AugerCalculator:
         t0 = time.time()
         gen = PairGenerator(
             auger_type,
-            (self, CB_window, VB_window, approach, is_parallel, search_mode,
+            (self, CB_window, VB_window, approach, search_mode,
              num_val, table_name_suffix, poscar_path, False),
         )
         gen.create_pairs(
@@ -644,13 +908,22 @@ class AugerCalculator:
         print(f"  Read {len(data):,} {auger_type.upper()} pairs from {len(file_paths)} file(s)")
         return data, auger_type
 
-    def read_matrix_elements(self, file_path: str) -> List[Dict]:
-        """Read matrix elements from a JSONL file."""
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(file_path)
+    def read_matrix_elements(self, file_path: Union[str, List[str]]) -> List[Dict]:
+        """Read matrix elements from one JSONL file or a list of JSONL files."""
+        if isinstance(file_path, str):
+            file_paths = [file_path]
+        else:
+            file_paths = list(file_path)
 
-        with open(file_path, "r") as f:
-            data = [json.loads(line.strip()) for line in f]
+        data: List[Dict] = []
+        for fp in file_paths:
+            if not os.path.exists(fp):
+                raise FileNotFoundError(fp)
+            with open(fp, "r") as f:
+                data.extend(json.loads(line.strip()) for line in f if line.strip())
+
+        if not data:
+            raise ValueError("No matrix elements found in the provided JSONL file(s).")
 
         # Detect auger type from pair_id pattern
         E3_idx = int(data[0]["pair_id"].split("-")[2])
@@ -658,8 +931,82 @@ class AugerCalculator:
 
         self.matrix_elements_dicts[auger_type] = data
         self.is_matrix_elements_calculated[auger_type] = True
-        print(f"  Read {len(data):,} matrix elements ({auger_type.upper()}) from {file_path}")
+        print(f"  Read {len(data):,} matrix elements ({auger_type.upper()}) from {len(file_paths)} file(s)")
         return data
+
+    # ------------------------------------------------------------------
+    # K-point → WAVECAR mapping (multi-folder / adaptive mode)
+    # ------------------------------------------------------------------
+    def set_kpoints_mapping(
+        self,
+        mapping_csv: str,
+        auger_type: str = "eeh",
+    ) -> None:
+        """
+        Assign ``k*_wc_index`` (1-based) to every pair so that each
+        k-point maps to the correct WAVECAR file, and convert the global
+        ``k*_index`` to a local (within-WAVECAR) index.
+
+        Call this **after** pairs have been generated or read back from CSV,
+        and **before** :meth:`calculate_matrix_elements`.
+
+        This is required to call when parsing multiple VASP folders in the 'expanded around CBM/VBM' mode AND approach = 'nearest_kpoint',
+        because 'exact_kpoint' approach generates its own NSCF WAVECARs.
+
+        The mapping CSV is produced by
+        :func:`utilities._create_kpoints_mapping` (called automatically
+        inside :func:`utilities.generate_adaptive_nscf_inputs`).  It has
+        three columns:
+
+        * ``kpoint_first_index(included)`` — first global k-index in the range
+        * ``kpoint_last_index(excluded)``  — one past the last global k-index
+        * ``wavecar_path``                 — path to the WAVECAR file
+
+        Parameters
+        ----------
+        mapping_csv : str
+            Path to the mapping CSV file.
+        auger_type : {'eeh', 'ehh'}
+            Which pair set to update.
+        """
+        import pandas as _pd
+
+        if not self.is_auger_pairs_created.get(auger_type, False):
+            raise RuntimeError(
+                f"No {auger_type.upper()} pairs loaded. Generate or read pairs first."
+            )
+
+        mapping = _pd.read_csv(mapping_csv)
+        # Build ordered list of (first_global, last_global) — 1-based wc_index
+        # is simply the row position + 1.
+        ranges = [
+            (int(row["kpoint_first_index(included)"]),
+             int(row["kpoint_last_index(excluded)"]))
+            for _, row in mapping.iterrows()
+        ]
+
+        def _lookup(global_idx: int):
+            """Return (wc_index_1based, local_index) for a global k-index."""
+            for ri, (first, last) in enumerate(ranges):
+                if first <= global_idx < last:
+                    return ri + 1, global_idx - first
+            raise ValueError(
+                f"Global k-index {global_idx} not found in mapping "
+                f"(ranges cover 0..{ranges[-1][1] - 1})"
+            )
+
+        pairs = self.auger_pairs_dicts[auger_type]
+        for pair in pairs:
+            for ki in (1, 2, 3, 4):
+                idx_key = f"k{ki}_index"
+                wc_key = f"k{ki}_wc_index"
+                global_idx = int(pair[idx_key])
+                wc, local_idx = _lookup(global_idx)
+                pair[wc_key] = wc          # 1-based
+                pair[idx_key] = local_idx  # local within WAVECAR
+
+        print(f"\n  ✓ Mapped {len(pairs):,} {auger_type.upper()} pairs "
+              f"across {len(ranges)} WAVECAR(s)  (k*_wc_index is 1-based)")
 
     # ------------------------------------------------------------------
     # Matrix-element calculation
@@ -668,7 +1015,7 @@ class AugerCalculator:
         self,
         auger_type: str,
         wavecar_files: Union[str, List[str]] = "WAVECAR",
-        dielectric_constant: Optional[float] = None,
+        dielectric_constant=None,
         num_matrix_elements: Union[int, str] = "all",
         continue_from_files: Union[str, List[str]] = [],
         add_suffix_name: str = "",
@@ -683,8 +1030,11 @@ class AugerCalculator:
             WAVECAR path(s).  For ``nearest_kpoint`` provide a single
             SCF WAVECAR.  For ``exact_kpoint`` provide
             ``['NSCF_1/WAVECAR', 'NSCF_2/WAVECAR', ...]``.
-        dielectric_constant : float or None
-            Falls back to the value parsed from ``vasprun.xml``.
+        dielectric_constant : float, 3x3 array-like, or None
+            Dielectric constant or Cartesian dielectric tensor used for the
+            screened Coulomb interaction.
+            If omitted, falls back only to a value previously stored in
+            ``band_info.txt`` as ``dielectric_constant_used_in_matrix_elements``.
         num_matrix_elements : int or 'all'
         continue_from_files : str or list[str]
             JSONL file(s) with previously computed elements.
@@ -700,12 +1050,19 @@ class AugerCalculator:
             dielectric_constant = self.dielectric_constant
             if dielectric_constant is None:
                 raise ValueError("Provide a dielectric constant.")
+        dielectric_value, _, _, _ = ut.normalize_dielectric_input(dielectric_constant)
+        self.dielectric_constant = dielectric_value
+        with open(f"{self.results_folder}/band_info.txt", "a") as f:
+            f.write(
+                "dielectric_constant_used_in_matrix_elements "
+                f"{json.dumps(self.dielectric_constant)}\n"
+            )
 
         if isinstance(continue_from_files, str):
             continue_from_files = [continue_from_files]
 
         t0 = time.time()
-        me = MatrixElements(self, auger_type, dielectric_constant, wavecar_files)
+        me = MatrixElements(self, auger_type, self.dielectric_constant, wavecar_files)
         results = me.calculate_matrix_elements_parallel(
             wavecar_files, num_matrix_elements, add_suffix_name, continue_from_files,
         )
@@ -779,11 +1136,19 @@ class AugerCalculator:
         results = {d: {f: 0.0 for f in FWHM} for d in delta_function}
         me_map = {m["pair_id"]: m for m in me_list}
 
+        completed_pairs = []
         for pair in pairs:
             pid = pair["pair_id"]
             if pid not in me_map:
                 continue
-            M2 = me_map[pid]["|M|^2"] * eV**2  # J²
+            M_ = me_map[pid]["|M|^2"]
+            pair["|M|"] = np.sqrt(M_) # eV
+            try:
+                M_0_ = me_map[pid]["|M(G=0)|^2"]
+                pair["|M(G=0)|"] = np.sqrt(M_0_) # eV
+            except:
+                pass
+            M2 = M_ * eV**2  # J²
             E1, E2, E3, E4 = pair["E1"], pair["E2"], pair["E3"], pair["E4"]
             kw1, kw2, kw3, kw4 = pair["kw1"], pair["kw2"], pair["kw3"], pair["kw4"]
             P = pair["probability"]
@@ -799,6 +1164,7 @@ class AugerCalculator:
                     results[dname][fwhm] += contrib
                     # Add columns :
                     pair[f"C_{dname}_FWHM_{fwhm:.3f}"] = contrib # cm⁶/s
+            completed_pairs.append(pair)
 
         # Flatten to CSV-friendly list
         rows = []
@@ -812,7 +1178,7 @@ class AugerCalculator:
 
         ut.write_to_csv(rows, f"Auger_coefficients_{auger_type}_{self.XX}{suffix}",
                         folder_to_save=self.results_folder)
-        ut.write_to_csv(pairs, f"auger_{auger_type}_pairs_{self.XX}_completed{suffix}",
+        ut.write_to_csv(completed_pairs, f"auger_{auger_type}_pairs_{self.XX}_completed{suffix}",
                         folder_to_save=self.results_folder)
         self.auger_coefficients[auger_type] = rows
 

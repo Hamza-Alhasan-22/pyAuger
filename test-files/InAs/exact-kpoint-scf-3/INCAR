@@ -1,0 +1,41 @@
+# ============================================================
+# INCAR: Static SCF calculation for pyAuger test data
+# Material: InAs
+# Purpose:
+#   Generate a small, reproducible WAVECAR/CHGCAR/vasprun.xml
+#   for testing Auger pair generation and matrix elements.
+# ============================================================
+
+SYSTEM = InAs_3x3x3_pyAuger_test
+
+# ---------- Electronic minimization ----------
+PREC   = Accurate
+ENCUT  = 520
+EDIFF  = 1E-6
+NELM   = 100
+ALGO   = Normal
+
+# ---------- Static calculation ----------
+IBRION = -1
+NSW    = 0
+
+# ---------- Semiconductor smearing ----------
+ISMEAR = 0
+SIGMA  = 0.05
+
+# ---------- Nonmagnetic test calculation ----------
+ISPIN  = 1
+
+# ---------- Wavefunction / charge outputs ----------
+LWAVE  = .FALSE. # not required. NSCF calculations will generate the needed wavefunctions
+LCHARG = .TRUE. # required
+LORBIT = 11
+
+# ---------- Real-space projection / PAW accuracy ----------
+LREAL  = .FALSE.
+LASPH  = .TRUE.
+LMAXMIX = 4
+
+# ---------- Symmetry ----------
+# This tag is important for nearest-kpoint approach and not required in the exact-kpoint approach.
+# ISYM = -1

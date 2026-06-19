@@ -1,0 +1,33 @@
+ running    4 mpi-ranks, with    1 threads/rank, on    1 nodes
+ distrk:  each k-point on    4 cores,    1 groups
+ distr:  one band on    1 cores,    4 groups
+ OpenACC runtime initialized ...    4 GPUs detected
+ vasp.6.4.2 20Jul23 (build Jun  5 2025 09:16:51) complex                         
+ POSCAR found type information on POSCAR InAs
+ POSCAR found :  2 types and       2 ions
+ Reading from existing POTCAR
+ scaLAPACK will be used selectively (only on CPU)
+ Reading from existing POTCAR
+ LDA part: xc-table for Pade appr. of Perdew
+ POSCAR, INCAR and KPOINTS ok, starting setup
+ FFT: planning ... GRIDC
+ FFT: planning ... GRID_SOFT
+ FFT: planning ... GRID
+ WAVECAR not read
+ entering main loop
+       N       E                     dE             d eps       ncg     rms          rms(c)
+DAV:   1     0.108241546396E+03    0.10824E+03   -0.85621E+03   128   0.123E+03
+DAV:   2    -0.195489108452E+00   -0.10844E+03   -0.10378E+03   136   0.298E+02
+DAV:   3    -0.740260743421E+01   -0.72071E+01   -0.71833E+01   160   0.747E+01
+DAV:   4    -0.757662051658E+01   -0.17401E+00   -0.17350E+00   176   0.132E+01
+DAV:   5    -0.758429735925E+01   -0.76768E-02   -0.76768E-02   168   0.255E+00    0.477E+00
+DAV:   6    -0.727688279718E+01    0.30741E+00   -0.50149E-01   192   0.107E+01    0.260E+00
+DAV:   7    -0.724908304883E+01    0.27800E-01   -0.14355E-01   168   0.297E+00    0.741E-01
+DAV:   8    -0.725208325700E+01   -0.30002E-02   -0.16096E-02   152   0.130E+00    0.271E-01
+DAV:   9    -0.725334810695E+01   -0.12648E-02   -0.15720E-03   128   0.268E-01    0.168E-01
+DAV:  10    -0.725362117257E+01   -0.27307E-03   -0.29888E-04   144   0.231E-01    0.702E-02
+DAV:  11    -0.725367682374E+01   -0.55651E-04   -0.13381E-04   128   0.134E-01    0.325E-02
+DAV:  12    -0.725367695368E+01   -0.12995E-06   -0.48662E-06   176   0.210E-02
+   1 F= -.72536770E+01 E0= -.72522486E+01  d E =-.285671E-02
+ writing wavefunctions
+ PROFILE, used timers:     275

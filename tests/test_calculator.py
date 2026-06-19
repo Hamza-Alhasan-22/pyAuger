@@ -201,6 +201,16 @@ class TestReadBack:
         assert len(data) == 5
         assert all("|M|^2" in d for d in data)
 
+    def test_read_matrix_elements_list(self, loaded_calculator, sample_pairs_csv,
+                                       sample_matrix_elements_jsonl, tmp_path):
+        loaded_calculator.read_auger_pairs(sample_pairs_csv)
+        second = tmp_path / "matrix_elements_2.jsonl"
+        second.write_text(
+            json.dumps({"pair_id": "8-9-8-7-100-101-102-103", "|M|^2": 0.2}) + "\n"
+        )
+        data = loaded_calculator.read_matrix_elements([sample_matrix_elements_jsonl, str(second)])
+        assert len(data) == 6
+
     def test_read_matrix_elements_not_found(self, loaded_calculator):
         with pytest.raises(FileNotFoundError):
             loaded_calculator.read_matrix_elements("nonexistent.jsonl")

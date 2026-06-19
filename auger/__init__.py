@@ -14,7 +14,6 @@ Main classes
 AugerCalculator : Orchestrates the complete Auger calculation workflow.
 PairGenerator   : Identifies valid 4-particle scattering channels.
 MatrixElements  : Computes Coulomb matrix elements from VASP wavefunctions.
-AugerAnalyzer   : Post-processing, visualization, and convergence analysis.
 
 Quick start
 -----------
@@ -30,15 +29,13 @@ Quick start
 from .calculator import AugerCalculator
 from .pairs import PairGenerator, Pair
 from .matrix_elements import MatrixElements
-from .analysis import AugerAnalyzer
 from . import utilities
 
-__version__ = "2.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "AugerCalculator",
     "PairGenerator",
     "Pair",
     "MatrixElements",
-    "AugerAnalyzer",
     "utilities",
 ]

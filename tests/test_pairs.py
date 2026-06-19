@@ -169,7 +169,7 @@ class TestPairGeneratorInit:
         calc = loaded_calculator
         calc.calculate_carrier_concentrations(delta_n=1e17)
         gen = PairGenerator("eeh", (
-            calc, 0.3, 0.3, "nearest_kpoint", False, "Brute_Force",
+            calc, 0.3, 0.3, "nearest_kpoint", "Brute_Force",
             -1, "", None, False,
         ))
         assert len(gen.E1_energies) > 0
@@ -182,7 +182,7 @@ class TestPairGeneratorInit:
         calc = loaded_calculator
         calc.calculate_carrier_concentrations(delta_n=1e17)
         gen = PairGenerator("ehh", (
-            calc, 0.3, 0.3, "nearest_kpoint", False, "Brute_Force",
+            calc, 0.3, 0.3, "nearest_kpoint", "Brute_Force",
             -1, "", None, False,
         ))
         assert len(gen.E1_energies) > 0
@@ -195,7 +195,7 @@ class TestPairGeneratorInit:
         calc = loaded_calculator
         calc.calculate_carrier_concentrations(delta_n=1e17)
         gen = PairGenerator("eeh", (
-            calc, 0.3, 0.3, "nearest_kpoint", False, "Max_Heap",
+            calc, 0.3, 0.3, "nearest_kpoint", "Max_Heap",
             -1, "", None, False,
         ))
         if len(gen.E1_energies) > 1:
@@ -213,7 +213,7 @@ class TestNearestKpoint:
         calc = loaded_calculator
         calc.calculate_carrier_concentrations(delta_n=1e17)
         return PairGenerator("eeh", (
-            calc, 0.3, 0.3, "nearest_kpoint", False, "Brute_Force",
+            calc, 0.3, 0.3, "nearest_kpoint", "Brute_Force",
             -1, "", None, False,
         ))
 
@@ -377,7 +377,7 @@ class TestExactKpoint:
         calc = loaded_calculator
         calc.calculate_carrier_concentrations(delta_n=1e17)
         gen = PairGenerator("eeh", (
-            calc, 0.3, 0.3, "exact_kpoint", False, "Brute_Force",
+            calc, 0.3, 0.3, "exact_kpoint", "Brute_Force",
             -1, "", None, False,
         ))
         rl = calc.reciprocal_lattice
@@ -390,8 +390,9 @@ class TestExactKpoint:
         calc = loaded_calculator
         data = calc.data_energies
         # Find closest to CBM at k-point 0
-        bi, e = PairGenerator._find_closest_band_at_kpoint(
+        bi, e, residual = PairGenerator._find_closest_band_at_kpoint(
             calc.CBM, data, 0
         )
         assert 0 <= bi < calc.num_of_bands
         assert isinstance(e, float)
+        assert residual >= 0

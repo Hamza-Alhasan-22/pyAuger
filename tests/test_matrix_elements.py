@@ -43,6 +43,16 @@ class TestMatrixElementsIO:
         assert result[0]["|M|^2"] == 0.5
         assert result[2]["pair_id"] == "8-9-8-7-2-3-4-5"
 
+    def test_read_matrix_elements_from_file_list(self, tmp_path):
+        """Read chunked JSONL matrix-element files as one logical input."""
+        p1 = tmp_path / "test_me_1.jsonl"
+        p2 = tmp_path / "test_me_2.jsonl"
+        p1.write_text(json.dumps({"pair_id": "a", "|M|^2": 0.5}) + "\n")
+        p2.write_text(json.dumps({"pair_id": "b", "|M|^2": 0.3}) + "\n")
+
+        result = MatrixElements.read_matrix_elements_from_file([str(p1), str(p2)])
+        assert [row["pair_id"] for row in result] == ["a", "b"]
+
     def test_read_empty_file(self, tmp_path):
         p = tmp_path / "empty.jsonl"
         p.write_text("")
@@ -116,7 +126,7 @@ class TestWorkerFunction:
              "k1_index": 0, "k2_index": 0, "k3_index": 0, "k4_index": 0,
              "E1_index": 0, "E2_index": 0, "E3_index": 0, "E4_index": 0,
              "k1_wc_index": None},
-            "eeh", 12.0, 0.01,
+            "eeh", "scalar", 12.0, None, 0.01,
             MATRIX_FACTOR, 1e-28, 0.1, 0.5, 1e-80,
             np.eye(3),
         )
@@ -129,7 +139,7 @@ class TestWorkerFunction:
         """Even on error, result is a dict with pair_id."""
         bad_args = (
             {"pair_id": "fail-test"},
-            "eeh", 12.0, 0.01,
+            "eeh", "scalar", 12.0, None, 0.01,
             MATRIX_FACTOR, 1e-28, 0.1, 0.5, 1e-80,
             np.eye(3),
         )

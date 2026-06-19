@@ -231,6 +231,53 @@ class TestCoulombHelpers:
         w2 = ut.W(0.5, 10.0, 0.1)
         assert w1 > w2
 
+    def test_calculate_epsilon_matches_scalar_model_formula(self):
+        """Scalar dielectric model keeps the existing a, b, c behavior."""
+        q = np.array([0.25, 0.1, 0.0])
+        a, b, c = 0.1, 0.5, 1e-42
+        q_mag = np.linalg.norm(q)
+        expected = 1.0 + 1.0 / (a + b * q_mag**2 + c * (q_mag * 1e10) ** 4)
+        assert ut.calculate_epsilon(q, a, b, c) == pytest.approx(expected, rel=1e-12)
+
+    def test_directional_tensor_matches_scalar_for_isotropic_tensor(self):
+        eps = 12.0
+        q = np.array([0.3, 0.4, 0.1])
+        lam = 0.02
+        b, c = 0.5, 1e-80
+        a = (eps - 1.0) ** -1
+        scalar_eps = ut.calculate_epsilon(q, a, b, c)
+        scalar = ut.W(np.linalg.norm(q), scalar_eps, lam)
+        tensor = ut.directional_dependent_W(q, eps * np.eye(3), lam, b, c)
+        assert tensor == pytest.approx(scalar, rel=1e-12)
+
+    def test_directional_tensor_is_direction_dependent(self):
+        tensor = np.diag([10.0, 20.0, 30.0])
+        lam = 0.02
+        b, c = 0.5, 1e-80
+        eps_x = ut.directional_dependent_epsilon(np.array([0.5, 0.0, 0.0]), tensor, b, c)
+        eps_z = ut.directional_dependent_epsilon(np.array([0.0, 0.0, 0.5]), tensor, b, c)
+        wx = ut.directional_dependent_W(np.array([0.5, 0.0, 0.0]), tensor, lam, b, c)
+        wz = ut.directional_dependent_W(np.array([0.0, 0.0, 0.5]), tensor, lam, b, c)
+        assert eps_x != pytest.approx(eps_z)
+        assert wx != pytest.approx(wz)
+        assert wx > wz
+
+    def test_directional_tensor_model_tends_to_one_at_large_q(self):
+        tensor = np.diag([10.0, 20.0, 30.0])
+        b, c = 0.5, 1e-80
+        small_q_eps = ut.directional_dependent_epsilon(
+            np.array([0.1, 0.0, 0.0]), tensor, b, c
+        )
+        large_q_eps = ut.directional_dependent_epsilon(
+            np.array([100.0, 0.0, 0.0]), tensor, b, c
+        )
+        assert abs(large_q_eps - 1.0) < abs(small_q_eps - 1.0)
+        assert large_q_eps == pytest.approx(1.0, abs=1e-3)
+
+    def test_invalid_dielectric_shape_raises(self):
+        with pytest.raises(ValueError, match="3x3"):
+            ut.normalize_dielectric_input([1.0, 2.0, 3.0])
+
     def test_I_ab_identity(self):
         """Overlap of identical wavefunctions with G=0 → norm²."""
         G = np.array([0, 0, 0])
@@ -314,6 +361,114 @@ class TestCSVRoundTrip:
         assert len(combined) == 2
         ids = {r["pair_id"] for r in combined}
         assert ids == {"a", "b"}
+
+
+# ======================================================================
+# NSCF continuation helpers
+# ======================================================================
+class TestNSCFContinuation:
+
+    def test_create_nscf_inputs_deduplicates_target_and_scf_coordinates(self, tmp_path):
+        scf = tmp_path / "scf"
+        scf.mkdir()
+        for name in ("POTCAR", "POSCAR", "CHGCAR"):
+            (scf / name).write_text(f"{name}\n")
+        (scf / "INCAR").write_text("ENCUT = 400\n")
+
+        nscf_base = tmp_path / "nscf"
+        exact_csv = tmp_path / "exact_kpoints_eeh_4_1.csv"
+        pd.DataFrame([
+            {
+                "partial_pair_id": "0-X-0-0-0-X-0-4",
+                "P_134": 1.0,
+                "k1_index": 0,
+                "k3_index": 0,
+                "k4_index": 4,
+                "k1_frac": [0.0, 0.0, 0.0],
+                "k3_frac": [0.0, 0.0, 0.0],
+                "k4_frac": [0.1, 0.0, 0.0],
+                "k2_target_frac_mapped": [0.1, 0.0, 0.0],
+            }
+        ]).to_csv(exact_csv, index=False)
+
+        ut.create_nscf_inputs(
+            scf_folder=str(scf),
+            nscf_folder=str(nscf_base),
+            exact_kpoints_table=str(exact_csv),
+            auger_type="eeh",
+            num_kpoints_per_file="all",
+            efermi=1.0,
+        )
+
+        kpoints = (nscf_base / "NSCF_eeh_1" / "KPOINTS").read_text().splitlines()
+        assert int(kpoints[1]) == 2
+        coords = [tuple(float(x) for x in line.split()[:3]) for line in kpoints[3:]]
+        assert len(coords) == len(set(coords)) == 2
+
+        row = pd.read_csv(exact_csv).to_dict("records")[0]
+        assert row["k2_wc_index"] == row["k4_wc_index"]
+        assert row["k2_nscf_index"] == row["k4_nscf_index"]
+        assert row["k1_wc_index"] == row["k3_wc_index"]
+        assert row["k1_nscf_index"] == row["k3_nscf_index"]
+
+    def test_create_nscf_inputs_reuses_previous_kpoints(self, tmp_path):
+        scf = tmp_path / "scf"
+        scf.mkdir()
+        for name in ("POTCAR", "POSCAR", "CHGCAR"):
+            (scf / name).write_text(f"{name}\n")
+        (scf / "INCAR").write_text("ENCUT = 400\nEFERMI = 1.0\n")
+
+        nscf_base = tmp_path / "nscf"
+        prev = nscf_base / "NSCF_eeh_1"
+        prev.mkdir(parents=True)
+        (prev / "INCAR").write_text("EFERMI = 1.0\n")
+        (prev / "KPOINTS").write_text(
+            "Previous NSCF\n"
+            "2\n"
+            "Reciprocal\n"
+            "  0.00000000  0.00000000  0.00000000  1\n"
+            "  0.10000000  0.00000000  0.00000000  1\n"
+        )
+
+        exact_csv = tmp_path / "exact_kpoints_eeh_4_2.csv"
+        pd.DataFrame([
+            {
+                "partial_pair_id": "0-X-0-0-0-X-1-2",
+                "P_134": 1.0,
+                "k1_index": 0,
+                "k3_index": 3,
+                "k4_index": 4,
+                "k1_frac": [0.0, 0.0, 0.0],
+                "k3_frac": [0.2, 0.0, 0.0],
+                "k4_frac": [0.3, 0.0, 0.0],
+                "k2_target_frac_mapped": [0.1, 0.0, 0.0],
+            }
+        ]).to_csv(exact_csv, index=False)
+
+        ut.create_nscf_inputs(
+            scf_folder=str(scf),
+            nscf_folder=str(nscf_base),
+            exact_kpoints_table=str(exact_csv),
+            auger_type="eeh",
+            num_kpoints_per_file=1,
+            efermi=1.0,
+            continue_from_folders=str(prev),
+        )
+
+        assert (nscf_base / "NSCF_eeh_2" / "KPOINTS").exists()
+        assert (nscf_base / "NSCF_eeh_3" / "KPOINTS").exists()
+
+        rows = pd.read_csv(exact_csv).to_dict("records")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["k1_wc_index"] == 1
+        assert row["k1_nscf_index"] == 0
+        assert row["k2_wc_index"] == 1
+        assert row["k2_nscf_index"] == 1
+        assert row["k3_wc_index"] == 2
+        assert row["k3_nscf_index"] == 0
+        assert row["k4_wc_index"] == 3
+        assert row["k4_nscf_index"] == 0
 
 
 # ======================================================================

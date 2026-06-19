@@ -2,12 +2,16 @@ from setuptools import setup, find_packages
 
 setup(
     name="pyAuger",
-    version="1.0.0",
+    version="1.1.0",
     description="Ab-initio direct Auger recombination calculator for semiconductors",
     author="Hamza Alhasan",
     author_email="hamza.alhasan.22@gmail.com",
     url="https://github.com/Hamza-Alhasan-22/pyAuger",
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        "auger.cpp": ["*.cpp", "*.h", "*.hpp", "Makefile"],
+    },
     python_requires=">=3.8",
     # install_requires=[
     #     "numpy",

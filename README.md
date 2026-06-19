@@ -1,6 +1,7 @@
 # pyAuger — ab-initio Auger Recombination Calculator
 
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.x-blue?style=flat-square&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -8,7 +9,7 @@ A Python package for calculating direct Auger recombination coefficients
 (**C_n** and **C_p**) for semiconductors using first-principles VASP data.
 
 <p align="center">
-  <img src="icon.png" alt="pyAuger icon" width="200"/>
+  <img src="icon.png" alt="pyAuger icon" width="100"/>
 </p>
 
 ---
@@ -38,27 +39,14 @@ The code was created and tested with the following versions:
 - scipy 1.16.3
 - pandas 2.2.3
 - matplotlib 3.10.7
-- pymatgen 2025.10.7
+- [pymatgen](https://github.com/materialsproject/pymatgen/tree/master) 2025.10.7
 - [pyvaspwfc](https://github.com/QijingZheng/VaspBandUnfolding/tree/master) 1.0
 
 ---
 
-## Package structure
-
-```
-auger/
-├── __init__.py           # Package interface & exports
-├── constants.py          # Physical constants (eV, ε₀, ℏ, …)
-├── utilities.py          # I/O helpers, delta functions, BZ folding
-├── calculator.py         # AugerCalculator — main driver class
-├── pairs.py              # PairGenerator + Pair — scattering channel identification
-├── matrix_elements.py    # MatrixElements — Coulomb |M|² from wavefunctions
-├── analysis.py           # AugerAnalyzer — plotting & convergence analysis
-```
-
----
-
 ## Concepts
+
+Thanks to the paper [Kioupakis et al., 2015](https://doi.org/10.1103/PhysRevB.92.035207) as the code was built based on its background theory.
 
 ### Auger types
 
@@ -76,7 +64,7 @@ The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Aug
 
 ### Auger coefficient equation
 
-Most of the background theory can be found [here](https://doi.org/10.1103/PhysRevB.92.035207). The Auger coefficient is evaluated via Fermi's Golden Rule:
+The Auger coefficient is evaluated via Fermi's Golden Rule:
 
 $$C_n = \frac{4\pi}{\hbar} \frac{1}{n^2 p - n_i^2 n} \sum_{\text{pairs}} P \cdot |M|^2 \cdot \delta(\Delta E)$$
 
@@ -92,14 +80,7 @@ When three states (1, 2, 3) are chosen, the 4th state must satisfy
 | `nearest_kpoint` | Finds the nearest k-point in the SCF grid to the exact k₄ vector | No |
 | `exact_kpoint` | Runs NSCF calculations at the exact required k-points | Yes |
 
-> **Note:** The `nearest_kpoint` approach requires `ISYM = -1` in the VASP INCAR so that the full BZ k-mesh is available. The `exact_kpoint` approach does not have this requirement.
-
-### Two search modes
-
-| Mode | Description | When to use |
-|------|-------------|------------|
-| `Max_Heap` | Priority queue — extracts the top-N pairs efficiently | Default — fast and memory-efficient |
-| `Brute_Force` | Exhaustive triple loop over all state combinations | Reference calculations or small grids |
+> **Note:** The `nearest_kpoint` approach requires `ISYM = -1` in the VASP INCAR so that the full BZ k-mesh is available. The `exact_kpoint` approach does not have this requirement. More info in the tutorials.
 
 ### Delta function approximations
 
@@ -116,232 +97,52 @@ Auger recombination coefficients are sensitive to the density of the k-point gri
 
 ---
 
-## Quick start
+### How to use pyAuger?
 
-```python
-from auger import AugerCalculator
+The recommended starting point is the full notebook tutorial:
 
-if __name__ == "__main__":
-    # 1) Initialise
-    calc = AugerCalculator(T=300, nd=0)         # 300 K, intrinsic case
+- [`tutorials/main_tutorial.ipynb`](tutorials/main_tutorial.ipynb)
+  Walks through the complete Python workflow: parsing VASP data, choosing carrier/energy-window settings, generating Auger pairs, calculating matrix elements, and computing Auger coefficients.
 
-    # 2) Import band-structure data (pre-parsed from VASP)
-    calc.import_parsed_BS_data("./parsed_data")
+For quick, script-based examples, use:
 
-    # 3) Carrier concentrations
-    calc.calculate_carrier_concentrations(delta_n=1e17)
+- [`tutorials/example_nearest_kpoint.py`](tutorials/example_nearest_kpoint.py)
+  Simple and complete workflow for the `nearest_kpoint` approach.
+- [`tutorials/example_exact_kpoint_step1.py`](tutorials/example_exact_kpoint_step1.py)
+  Step 1 of the `exact_kpoint` workflow: generate exact k-points and prepare NSCF folders.
+- [`tutorials/example_exact_kpoint_step2.py`](tutorials/example_exact_kpoint_step2.py)
+  Step 2 of the `exact_kpoint` workflow: after NSCF VASP runs finish, generate pairs, calculate matrix elements, and compute rates.
 
-    # 4) Generate Auger pairs (scattering channels)
-    calc.create_auger_pairs(
-        CB_window=0.3, VB_window=0.3,
-        auger_type="eeh",
-        approach="nearest_kpoint",
-        search_mode="Max_Heap",
-    )
+For larger calculations, pyAuger also provides standalone C++ executables for pair generation and matrix-element calculation:
 
-    # 5) Compute matrix elements
-    calc.calculate_matrix_elements(
-        auger_type="eeh",
-        wavecar_files="WAVECAR",
-        dielectric_constant=16.8,
-    )
+- [`tutorials/cpp_workflow/full_cpp_tutorial.ipynb`](tutorials/cpp_workflow/full_cpp_tutorial.ipynb)
+  Full C++ workflow tutorial, including how to build the C++ executables and how to run both `nearest_kpoint` and `exact_kpoint` workflows.
+- [`tutorials/cpp_workflow/example_cpp_nearest_kpoint.py`](tutorials/cpp_workflow/example_cpp_nearest_kpoint.py)
+  Quick script for the C++ `nearest_kpoint` workflow.
+- [`tutorials/cpp_workflow/example_cpp_exact_kpoint_step1.py`](tutorials/cpp_workflow/example_cpp_exact_kpoint_step1.py)
+  C++ exact-kpoint step 1: generate exact k-points and prepare NSCF folders.
+- [`tutorials/cpp_workflow/example_cpp_exact_kpoint_step2.py`](tutorials/cpp_workflow/example_cpp_exact_kpoint_step2.py)
+  C++ exact-kpoint step 2: generate final pairs, calculate matrix elements, and compute rates.
 
-    # 6) Evaluate Auger coefficient
-    results = calc.calculate_auger_rates(auger_type="eeh")
-```
+General workflow:
 
-> **Note:** When running pyAuger as a `.py` script (rather than in a Jupyter notebook), the code must be wrapped inside an `if __name__ == "__main__":` block. This is required because pyAuger uses Python's `multiprocessing` module for parallel matrix element evaluation, and omitting this might lead to errors.
-
----
-
-## Workflow details
-
-### Step 0 — Manual band-edge assignment (optional)
-
-For materials where pymatgen detects a zero or incorrect band gap (e.g. semimetals or narrow-gap systems), the automatic identification of the conduction band minimum (CBM) and valence band maximum (VBM) may fail. In such cases, manually specify the band indices **before** parsing:
-
-```python
-calc = AugerCalculator(T=300, nd=0)
-
-# 0-based indices: firstCB is the first conduction band,
-# lastVB is the last valence band.
-calc.assign_firstCB_and_lastVB(
-    firstCB_index=25,
-    lastVB_index=24,
-)
-
-# Then proceed with parsing as usual using parse_BS_data ...
-```
-
-This assigning must be done **before** `parse_BS_data` or `import_parsed_BS_data`.
-
-### Step 1 — Parse VASP data
-
-```python
-calc.parse_BS_data(
-    folder_path="./vasp_scf",     # directory with EIGENVAL, vasprun.xml, KPOINTS, POSCAR
-    write_path="./results",       # output directory (created if needed)
-    scissor_shift=0.0,            # rigid shift applied to CB bands (eV)
-    force_gap=None,               # if set, overrides scissor_shift to enforce this exact gap
-)
-```
-
-This reads the eigenvalues, k-points, dielectric tensor, and reciprocal lattice from the VASP outputs, then saves `Egrid_X_XX.npy`, `kgrid_X_XX.npy`, `kw_X_XX.npy`, and `band_info.txt` to the output directory.
-
-### Step 2 — Import the parsed data
-
-To reload previously parsed data:
-
-```python
-calc.import_parsed_BS_data("./results")
-```
-
-### Step 3 — Carrier concentrations
-
-```python
-calc.calculate_carrier_concentrations(
-    delta_n=1e17,        # excess carrier concentration (cm⁻³); 0 for equilibrium
-    start_Ef=None,       # lower bound for Fermi-level search (eV); auto-determined if None
-    end_Ef=None,         # upper bound for Fermi-level search (eV); auto-determined if None
-    Nsteps_Ef=500,       # resolution of the Fermi-level grid
-)
-```
-
-Solves charge neutrality self-consistently to find **E_F**, then computes:
-- **n**, **p** — electron and hole concentrations
-- **n_i** — intrinsic carrier concentration
-- Quasi-Fermi levels **E_Fn** and **E_Fp** (when `delta_n > 0`)
-- Fermi–Dirac occupations for every state
-
-### Step 4 — Energy cutoffs (optional)
-
-```python
-CB_auto, VB_auto = calc.calculate_energy_cutoffs(
-    charge_threshold=0.99,   # fraction of carrier density to capture
-    max_M=30,                # maximum integer M for the cut-off E_cut = Ef + M*k_B*T
-)
-```
-
-Automatically determines the smallest energy window around the band edges that contains the specified fraction of the total carrier density. Alternatively, set `CB_window` and `VB_window` manually.
-
-### Step 5 — Pair generation
-
-```python
-gen = calc.create_auger_pairs(
-    CB_window=0.3, # or CB_auto
-    VB_window=0.3, # or VB_auto
-    auger_type="eeh",                 # "eeh" for C_n, "ehh" for C_p
-    approach="nearest_kpoint",        # or "exact_kpoint"
-    search_mode="Max_Heap",           # or "Brute_Force"
-    num_top_pairs=1000,               # keep top 1000 pairs, or "all"
-)
-```
-
-For the `exact_kpoint` approach, the workflow is:
-
-1. Generate the required off-grid k-points:
-   ```python
-   calc.create_exact_kpoint_list(
-       CB_window=0.3, VB_window=0.3,
-       auger_type="eeh",
-       poscar_path="./vasp_scf/POSCAR",
-   )
-   ```
-2. Create NSCF input folders for VASP:
-   ```python
-   from auger import utilities
-   utilities.create_nscf_inputs(
-       scf_folder="./vasp_scf",
-       nscf_folder="./nscf_inputs",
-       exact_kpoints_table="./results/exact_kpoints_eeh_XX.csv",
-       auger_type="eeh",
-   )
-   ```
-3. Run the NSCF VASP jobs externally.
-4. Create pairs using the NSCF results:
-   ```python
-   gen = calc.create_auger_pairs(
-       CB_window=0.3, VB_window=0.3,
-       auger_type="eeh",
-       approach="exact_kpoint",
-       nscf_folders=["./nscf_outputs"],
-       exact_kpoints_csv="./results/exact_kpoints_eeh_XX.csv",
-   )
-   ```
-
-### Step 6 — Matrix elements
-
-```python
-me = calc.calculate_matrix_elements(
-    auger_type="eeh",
-    wavecar_files="WAVECAR",            # path(s) to WAVECAR file(s)
-    dielectric_constant=16.8,           # static dielectric constant
-    num_matrix_elements="all",          # or an integer to limit
-)
-```
-
-Computes the screened Coulomb matrix element |M|² for each pair using the wavefunctions from the WAVECAR. This step runs in parallel using Python multiprocessing.
-
-To resume an interrupted calculation, pass the partial results file:
-
-```python
-me = calc.calculate_matrix_elements(
-    auger_type="eeh",
-    wavecar_files="WAVECAR",
-    dielectric_constant=16.8,
-    continue_from_files="./results/eeh_matrix_elements_partial.jsonl",
-)
-```
-
-### Step 7 — Auger coefficients
-
-```python
-results = calc.calculate_auger_rates(
-    auger_type="eeh",
-    delta_function=("Gaussian", "Lorentzian", "Rectangular"),
-    FWHM=(0.001, 0.005, 0.01, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2),
-)
-```
-
-Outputs a CSV with one row per (delta function, FWHM) combination.
+1. Prepare a VASP SCF calculation with the required files: `EIGENVAL`, `vasprun.xml`, `KPOINTS`, `POSCAR`, and `WAVECAR`.
+2. Choose either `nearest_kpoint` or `exact_kpoint`.
+3. Run the matching tutorial or quick script.
+4. For `exact_kpoint`, run the generated NSCF VASP calculations before continuing to step 2 of the workflow.
+5. Check k-grid convergence before using final Auger coefficients.
 
 ---
 
-## File outputs
+# Tests
 
-| File | Description |
-|------|-------------|
-| `band_info.txt` | Material metadata: name, k-grid, band gap, lattice vectors, etc. |
-| `Egrid_X_XX.npy` | Eigenvalues referenced to VBM = 0 eV |
-| `kgrid_X_XX.npy` | k-point Cartesian coordinates |
-| `kw_X_XX.npy` | k-point weights |
-| `auger_{type}_pairs_{XX}.csv` | Generated Auger pairs with probabilities |
-| `{type}_matrix_elements_{XX}.jsonl` | Matrix elements for each pair |
-| `Auger_coefficients_{type}_{XX}.csv` | Final Auger coefficients |
-| `auger_{type}_pairs_{XX}_completed.csv` | Pairs with attached matrix elements (for analysis) |
+See [`docs/testing.md`](docs/testing.md) for the full testing guide.
 
----
+Default lightweight test command:
 
-## Units
-
-### Input (VASP data)
-
-| Quantity | Unit |
-|----------|------|
-| Eigenvalues (energies) | eV |
-| k-points (Cartesian) | Å⁻¹ |
-| Dielectric constant | Dimensionless (relative permittivity, i.e. ε/ε₀) |
-
-### Input + Output (pyAuger)
-
-| Quantity | Unit |
-|----------|------|
-| Energies (eigenvalues, band gap, Fermi levels, energy windows) | eV |
-| k-points (Cartesian coordinates in saved `.npy` files) | Å⁻¹ |
-| Carrier concentrations (n, p, n_i, delta_n, doping) | cm⁻³ |
-| Matrix elements M | eV |
-| Auger coefficients (C_n, C_p) | cm⁶/s |
-
+```bash
+python -m pytest
+```
 ---
 
 ## How to cite pyAuger

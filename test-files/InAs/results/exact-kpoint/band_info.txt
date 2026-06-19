@@ -1,0 +1,33 @@
+material_name InAs
+Crystal_System cubic
+Space_Group F-43m
+X 3
+XX 4
+E_Fermi 4.39967718
+nbands 16
+nkpoints 4
+kgrid [3, 3, 3]
+scissor_shift 0.4
+band_gap 0.0
+band_gap_after_shift 0.4
+firstCB_index 9
+lastVB_index 8
+CBM 0.38472282
+VBM -0.015277180000000001
+volume 56.5471
+b1 [1.6839947530006703, -0.5953823345220409, 0.0]
+b2 [0.0, 1.786146515275799, 0.0]
+b3 [-0.8419973765003351, -0.5953820903768791, 1.4583825178845475]
+NELECT 18.0
+q_TF 2.2544209947355656
+omega_p 3.1828972317188156e+16
+vasp_folders ["../test-files/InAs/exact-kpoint-scf-3"]
+nd 0
+Ef_eq 0.19368645464785345
+ni 8.086546766649992e+17
+n 9.086546766650632e+17
+p 9.086546766650637e+17
+delta_n 1e+17
+Efn 0.19670220931641888
+Efp 0.19066953573723522
+dielectric_constant_used_in_matrix_elements 12.3

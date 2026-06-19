@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 import os
+import glob
 from multiprocessing import cpu_count, get_context
 from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import vaspwfc as vwfc
+# from pyvaspwfc import vaspwfc as vwfc
 
 from . import utilities as ut
 from .constants import (
@@ -77,6 +79,25 @@ def _get_coeff_dict(ikpt: int, iband: int, wc_idx: int = 0) -> dict:
     return _Dict_cache[key]
 
 
+def _screened_W(
+    q_vec: np.ndarray,
+    dielectric_mode: str,
+    dielectric_tensor,
+    inv_debye: float,
+    a_fit: float,
+    b_fit: float,
+    c_fit: float,
+) -> float:
+    """Dispatch scalar/Penn or tensor directional q-dependent screening."""
+    q_mag = float(np.linalg.norm(q_vec))
+    if dielectric_mode == "tensor":
+        return ut.directional_dependent_W(
+            q_vec, dielectric_tensor, inv_debye, b_fit, c_fit, assume_valid=True
+        )
+    eps_q = ut.calculate_epsilon(q_mag, a_fit, b_fit, c_fit)
+    return ut.W(q_mag, eps_q, inv_debye)
+
+
 # ======================================================================
 # Worker function  (top-level so it can be pickled)
 # ======================================================================
@@ -87,8 +108,8 @@ def _calc_matrix_element(args) -> dict:
     Returns ``{"pair_id": ..., "|M|^2": ...}`` on success,
     or ``{"pair_id": ..., "error": ...}`` on failure.
     """
-    (pair_dict, auger_type, dielectric, inv_debye, matrix_factor,
-     V_m3, a_fit, b_fit, c_fit, true_Bcell) = args
+    (pair_dict, auger_type, dielectric_mode, dielectric_scalar, dielectric_tensor,
+     inv_debye, matrix_factor, V_m3, a_fit, b_fit, c_fit, true_Bcell) = args
 
     try:
         pid = pair_dict["pair_id"]
@@ -143,6 +164,8 @@ def _calc_matrix_element(args) -> dict:
 
         Md_sum = 0.0 + 0.0j
         Mx_sum = 0.0 + 0.0j
+        Md_G0 = 0.0 + 0.0j
+        Mx_G0 = 0.0 + 0.0j
 
         for G in common_G:
             G_dot_B = np.dot(G, true_Bcell)
@@ -153,30 +176,44 @@ def _calc_matrix_element(args) -> dict:
                 I_12 = ut.I_ab(Gp_minus_G, G1, d1, d2)
                 I_32 = ut.I_ab(G, G3, d3, d2)
                 I_14 = ut.I_ab(Gp_minus_G, G1, d1, d4)
-                arg_d = np.linalg.norm(k3 - k4 + G_dot_B)
-                arg_x = np.linalg.norm(k3 - k2 + G_dot_B)
+                q_d = k3 - k4 + G_dot_B
+                q_x = k3 - k2 + G_dot_B
             else:
                 I_34 = ut.I_ab(G, G2, d2, d1)   # I_21
                 I_12 = ut.I_ab(Gp_minus_G, G3, d3, d4)  # I_34
                 I_32 = ut.I_ab(G, G2, d2, d4)   # I_24
                 I_14 = ut.I_ab(Gp_minus_G, G3, d3, d1)  # I_31
-                arg_d = np.linalg.norm(k2 - k1 + G_dot_B)
-                arg_x = np.linalg.norm(k2 - k4 + G_dot_B)
+                q_d = k2 - k1 + G_dot_B
+                q_x = k2 - k4 + G_dot_B
 
-            eps_d = ut.calculate_epsilon(arg_d, a_fit, b_fit, c_fit)
-            eps_x = ut.calculate_epsilon(arg_x, a_fit, b_fit, c_fit)
-            Wd = ut.W(arg_d, eps_d, inv_debye)
-            Wx = ut.W(arg_x, eps_x, inv_debye)
+            Wd = _screened_W(q_d, dielectric_mode, dielectric_tensor, inv_debye, a_fit, b_fit, c_fit)
+            Wx = _screened_W(q_x, dielectric_mode, dielectric_tensor, inv_debye, a_fit, b_fit, c_fit)
 
-            Md_sum += I_34 * I_12 * Wd
-            Mx_sum += I_32 * I_14 * Wx
+            md_term = I_34 * I_12 * Wd
+            mx_term = I_32 * I_14 * Wx
+            Md_sum += md_term
+            Mx_sum += mx_term
+
+            if G[0] == 0 and G[1] == 0 and G[2] == 0:
+                Md_G0 = md_term
+                Mx_G0 = mx_term
+
+        prefactor = matrix_factor ** 2 / (V_m3 ** 2 * eV ** 2)
 
         Md2 = np.abs(Md_sum) ** 2
         Mx2 = np.abs(Mx_sum) ** 2
         Mdx2 = np.abs(Md_sum - Mx_sum) ** 2
-        M2 = (Md2 + Mx2 + Mdx2) * matrix_factor ** 2 / (V_m3 ** 2 * eV ** 2)
+        M2 = float((Md2 + Mx2 + Mdx2) * prefactor)
 
-        return {"pair_id": pid, "|M|^2": float(M2)}
+        Md2_0 = np.abs(Md_G0) ** 2
+        Mx2_0 = np.abs(Mx_G0) ** 2
+        Mdx2_0 = np.abs(Md_G0 - Mx_G0) ** 2
+        M2_0 = float((Md2_0 + Mx2_0 + Mdx2_0) * prefactor)
+
+        return {"pair_id": pid, "|M|^2": M2, "|M(G=0)|^2": M2_0,
+                "|Md|^2": float(Md2 * prefactor), "|Mx|^2": float(Mx2 * prefactor),
+                "|Md(G=0)|^2": float(Md2_0 * prefactor),
+                "|Mx(G=0)|^2": float(Mx2_0 * prefactor)}
 
     except Exception as exc:  # noqa: BLE001
         return {"pair_id": pair_dict.get("pair_id", "unknown"), "error": str(exc)}
@@ -194,8 +231,9 @@ class MatrixElements:
     auger_instance : AugerCalculator
         The parent calculator (provides band data, volume, etc.).
     auger_type : {'eeh', 'ehh'}
-    dielectric : float
-        Macroscopic dielectric constant.
+    dielectric : float or 3x3 array-like
+        Macroscopic dielectric constant or Cartesian dielectric tensor. Tensor
+        input uses directional q-dependent model dielectric screening.
     wavecar_files : str or list[str]
         Path(s) to WAVECAR files.
     """
@@ -204,12 +242,17 @@ class MatrixElements:
         self,
         auger_instance,
         auger_type: str,
-        dielectric: float,
+        dielectric,
         wavecar_files: Union[str, List[str]] = "WAVECAR",
     ):
         self.auger_type = auger_type
         self.auger = auger_instance
-        self.dielectric = dielectric
+        (
+            self.dielectric,
+            self.dielectric_is_tensor,
+            self.dielectric_scalar,
+            self.dielectric_tensor,
+        ) = ut.normalize_dielectric_input(dielectric)
 
         if isinstance(wavecar_files, str):
             wavecar_files = [wavecar_files]
@@ -231,31 +274,43 @@ class MatrixElements:
         # Electron contribution
         dE_n = ai.Efn - ai.CBM
         if dE_n < 0 or dE_n < 1.5 * kB_T:
-            lam_e = np.sqrt(self.dielectric * EPSILON_0 * kB_T * q
+            lam_e = np.sqrt(self.dielectric_scalar * EPSILON_0 * kB_T * q
                             / ((ai.n * 1e6) * q ** 2)) * 1e10
         else:
-            lam_e = np.sqrt(self.dielectric * EPSILON_0 * dE_n * eV
+            lam_e = np.sqrt(self.dielectric_scalar * EPSILON_0 * dE_n * eV
                             / (1.5 * (ai.n * 1e6) * q ** 2)) * 1e10
 
         # Hole contribution
         dE_p = ai.VBM - ai.Efp
         if dE_p < 0 or dE_p < 1.5 * kB_T:
-            lam_h = np.sqrt(self.dielectric * EPSILON_0 * kB_T * q
+            lam_h = np.sqrt(self.dielectric_scalar * EPSILON_0 * kB_T * q
                             / ((ai.p * 1e6) * q ** 2)) * 1e10
         else:
-            lam_h = np.sqrt(self.dielectric * EPSILON_0 * dE_p * eV
+            lam_h = np.sqrt(self.dielectric_scalar * EPSILON_0 * dE_p * eV
                             / (1.5 * (ai.p * 1e6) * q ** 2)) * 1e10
 
         inv = np.sqrt(1.0 / lam_e ** 2 + 1.0 / lam_h ** 2)
+        if self.dielectric_is_tensor:
+            print(
+                "  Dielectric tensor mode: Debye screening uses "
+                f"trace(epsilon)/3 = {self.dielectric_scalar:.6g}"
+            )
         print(f"  Inverse Debye length: {inv:.6f} Å⁻¹")
         return inv
 
     # ---- I/O ----
     @staticmethod
-    def read_matrix_elements_from_file(file_path: str) -> List[dict]:
-        """Read a JSONL file of matrix elements."""
-        with open(file_path, "r") as f:
-            return [json.loads(line.strip()) for line in f]
+    def read_matrix_elements_from_file(file_path: Union[str, List[str]]) -> List[dict]:
+        """Read one JSONL file or a list of JSONL files of matrix elements."""
+        if isinstance(file_path, str):
+            file_paths = [file_path]
+        else:
+            file_paths = list(file_path)
+        rows: List[dict] = []
+        for fp in file_paths:
+            with open(fp, "r") as f:
+                rows.extend(json.loads(line.strip()) for line in f if line.strip())
+        return rows
 
     # ---- Main parallel calculation ----
     def calculate_matrix_elements_parallel(
@@ -279,7 +334,8 @@ class MatrixElements:
         Returns
         -------
         list[dict]
-            Each dict has ``"pair_id"`` and ``"|M|^2"`` (in eV²).
+            Each dict has ``"pair_id"`` plus total, G=0, direct, and exchange
+            matrix-element fields. All matrix-element fields are in eV^2.
         """
         if isinstance(wavecar_files, str):
             wavecar_files = [wavecar_files]
@@ -288,9 +344,16 @@ class MatrixElements:
 
         suffix = f"_{add_suffix_name}" if add_suffix_name else ""
         out_dir = self.auger.results_folder.rstrip("/")
-        output_file = os.path.join(
-            out_dir, f"{self.auger_type}_matrix_elements_{self.auger.XX}{suffix}.jsonl"
+        output_base = os.path.join(
+            out_dir, f"{self.auger_type}_matrix_elements_{self.auger.XX}{suffix}"
         )
+        output_files_existing = sorted(
+            glob.glob(f"{output_base}_*.jsonl"),
+            key=lambda p: int(os.path.splitext(p)[0].rsplit("_", 1)[-1])
+            if os.path.splitext(p)[0].rsplit("_", 1)[-1].isdigit()
+            else 10**12,
+        )
+        output_files_resolved = {os.path.realpath(p) for p in output_files_existing}
 
         sorted_pairs = sorted(
             self.auger.auger_pairs_dicts[self.auger_type],
@@ -299,6 +362,7 @@ class MatrixElements:
 
         # ---- Skip already-computed pairs ----
         calculated: List[dict] = []
+        calculated_to_write: List[dict] = []
         if continue_from_files:
             done_ids: set = set()
             for cf in continue_from_files:
@@ -306,10 +370,14 @@ class MatrixElements:
                     print(f"  Warning: {cf} not found, skipping.")
                     continue
                 data = self.read_matrix_elements_from_file(cf)
+                is_output_file = os.path.realpath(cf) in output_files_resolved
                 for m in data:
                     if m.get("error") is None:
                         done_ids.add(m["pair_id"])
-                        calculated.append({"pair_id": m["pair_id"], "|M|^2": m["|M|^2"]})
+                        resumed = dict(m)
+                        calculated.append(resumed)
+                        if not is_output_file:
+                            calculated_to_write.append(resumed)
             sorted_pairs = [p for p in sorted_pairs if p["pair_id"] not in done_ids]
             print(f"  {len(sorted_pairs):,} pairs remaining after skipping {len(done_ids):,}")
 
@@ -334,7 +402,10 @@ class MatrixElements:
         print(f"\n  Computing {len(sorted_pairs):,} matrix elements on {n_workers} cores …")
 
         # ---- Penn-model dielectric fit parameters ----
-        a = (self.dielectric - 1) ** -1
+        if self.dielectric_is_tensor and abs(self.dielectric_scalar - 1.0) <= 1e-14:
+            a = np.inf
+        else:
+            a = (self.dielectric_scalar - 1) ** -1
         b = ALPHA_PENN / self.auger.q_TF ** 2
         c = HBAR ** 2 / (4 * M_E ** 2 * self.auger.omega_p ** 2)
 
@@ -342,29 +413,66 @@ class MatrixElements:
         true_Bcell = wfc0._Bcell * (2 * np.pi)
 
         args_list = [
-            (d, self.auger_type, self.dielectric, self.inverse_debye,
+            (d, self.auger_type,
+             "tensor" if self.dielectric_is_tensor else "scalar",
+             self.dielectric_scalar, self.dielectric_tensor,
+             self.inverse_debye,
              MATRIX_FACTOR, self.V_m3, a, b, c, true_Bcell)
             for d in sorted_pairs
         ]
 
+        # ---- Chunked JSONL writer ----
+        chunk_size = 1_000_000
+        written_files: List[str] = []
+        part_index = 1
+        rows_in_part = 0
+        writer = None
+
+        def _count_lines(path: str) -> int:
+            if not os.path.exists(path):
+                return 0
+            with open(path, "r") as fh:
+                return sum(1 for _ in fh)
+
+        def _open_next_part():
+            nonlocal part_index, rows_in_part, writer
+            if writer is not None:
+                writer.close()
+            while True:
+                path = f"{output_base}_{part_index}.jsonl"
+                rows_in_part = _count_lines(path)
+                if rows_in_part < chunk_size:
+                    break
+                part_index += 1
+            writer = open(path, "a")
+            if path not in written_files:
+                written_files.append(path)
+
+        def _write_row(row: dict):
+            nonlocal part_index, rows_in_part, writer
+            if writer is None or rows_in_part >= chunk_size:
+                if writer is not None:
+                    part_index += 1
+                _open_next_part()
+            writer.write(json.dumps(row) + "\n")
+            writer.flush()
+            rows_in_part += 1
+
         # ---- Write previously-known elements first ----
-        if calculated:
-            with open(output_file, "a") as f:
-                for r in calculated:
-                    f.write(json.dumps(r) + "\n")
+        for row in calculated_to_write:
+            _write_row(row)
 
         # ---- Pool execution ----
         results: List[dict] = []
         total = len(args_list)
-        with open(output_file, "a") as f:
+        try:
             ctx = get_context("spawn")
             with ctx.Pool(processes=n_workers,
                           initializer=_init_worker,
                           initargs=(wavecar_files,)) as pool:
                 for result in pool.imap_unordered(_calc_matrix_element, args_list):
-                    f.write(json.dumps(result) + "\n")
+                    _write_row(result)
                     results.append(result)
-                    f.flush()
                     done = len(results)
                     if done % 100 == 0 or done == total:
                         pct = done / total * 100
@@ -374,6 +482,12 @@ class MatrixElements:
                     # Check: if the result has an error, stop and raise an error:
                     if result.get("error") is not None:
                         raise RuntimeError(f"Error in pair {result['pair_id']}: {result['error']}")
+        finally:
+            if writer is not None:
+                writer.close()
 
-        print(f"\n  Saved → {output_file}")
+        if written_files:
+            print("\n  Saved matrix elements:")
+            for path in written_files:
+                print(f"    {path}")
         return results + calculated

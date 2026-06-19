@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = ["-ra"]
+markers = [
+    "cpp: optional C++ comparison or validation tests requiring compiled C++ executables",
+    "heavy: optional tests requiring real VASP output files or WAVECAR data",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=8.0",
+]
