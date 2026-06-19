@@ -9,7 +9,7 @@ A Python package for calculating direct Auger recombination coefficients
 (**C_n** and **C_p**) for semiconductors using first-principles VASP data.
 
 <p align="center">
-  <img src="icon.png" alt="pyAuger icon" width="100"/>
+  <img src="icon.png" alt="pyAuger icon" width="200"/>
 </p>
 
 ---
@@ -58,7 +58,7 @@ Thanks to the paper [Kioupakis et al., 2015](https://doi.org/10.1103/PhysRevB.92
 The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Auger recombinations and the carrier indices used in the code are shown in this figure:
 
 <p align="center">
-  <img src="eeh_ehh_auger.png" alt="EEH and EHH Auger recombination processes" width="600"/>
+  <img src="eeh_ehh_auger.png" alt="EEH and EHH Auger recombination processes" width="400"/>
 </p>
 
 
