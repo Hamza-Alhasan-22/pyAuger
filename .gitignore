@@ -43,5 +43,7 @@ tests/test_analysis.py
 adaptive_nscf_approach.ipynb
 examples/
 POTCAR
+**/POTCAR
 TEST_SUITE_SUMMARY.md
-
+OUTCAR
+**/OUTCAR
