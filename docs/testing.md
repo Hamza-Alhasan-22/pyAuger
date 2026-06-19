@@ -28,7 +28,7 @@ Then run:
 python -m pytest
 ```
 
-If you got some access denied problems, use this fall back, and add (--basetemp .pytest-tmp):
+If pytest raises a temporary-directory permission error, add (--basetemp .pytest-tmp):
 
 ```bash
 python -m pytest --basetemp .pytest-tmp
