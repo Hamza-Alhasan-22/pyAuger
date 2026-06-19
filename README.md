@@ -1,6 +1,6 @@
 # pyAuger — ab-initio Auger Recombination Calculator
 
-![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat-square&logo=pytest&logoColor=white)
+[![Tests](https://github.com/Hamza-Alhasan-22/pyAuger/actions/workflows/tests.yml/badge.svg)](https://github.com/Hamza-Alhasan-22/pyAuger/actions/workflows/tests.yml)
 ![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.x-blue?style=flat-square&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
