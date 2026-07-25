@@ -46,7 +46,7 @@ The code was created and tested with the following versions:
 
 ## Concepts
 
-Thanks to the paper [Kioupakis et al., 2015](https://doi.org/10.1103/PhysRevB.92.035207) as the code was built based on its background theory.
+Most of the background theory can be found in [Kioupakis et al., 2015](https://doi.org/10.1103/PhysRevB.92.035207).
 
 ### Auger types
 
