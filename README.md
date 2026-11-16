@@ -66,7 +66,7 @@ The total Auger coefficient is: **C_Auger = C_n + C_p**. The eeh and the ehh Aug
 
 The Auger coefficient is evaluated via Fermi's Golden Rule:
 
-$$C_n = \frac{4\pi}{\hbar} \frac{1}{n^2 p - n_i^2 n} \sum_{\text{pairs}} P \cdot |M|^2 \cdot \delta(\Delta E)$$
+$$C_n = \frac{4\pi}{\hbar} \frac{1}{n^2 p} \sum_{\text{pairs}} P \cdot |M|^2 \cdot \delta(\Delta E)$$
 
 where **P** is the Fermi–Dirac occupation-weighted probability, **|M|²** is the screened Coulomb matrix element, and **δ(ΔE)** enforces energy conservation (approximated by Gaussian, Lorentzian, or Rectangular broadening).
 
