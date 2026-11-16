@@ -1120,9 +1120,9 @@ class AugerCalculator:
         auger_factor = (4 * np.pi / h_bar) * (1.0 / V_m3**3) * (1.0 / eV) * 1e12
 
         if auger_type == "eeh":
-            carrier = self.n**2 * self.p - self.ni**2 * self.n
+            carrier = self.n**2 * self.p
         else:
-            carrier = self.p**2 * self.n - self.ni**2 * self.p
+            carrier = self.p**2 * self.n
         carrier *= (1e6) ** 3
         auger_factor *= (1.0 / carrier) if carrier != 0 else 0.0
 
